@@ -36,6 +36,24 @@ input[type=file]{display:none}
 #viewbar button{padding:8px 14px;font-size:14px;border-radius:8px}
 #viewbar span{flex:1;font-size:12.5px;color:#d8d5d2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #frame{flex:1;width:100%;border:0;background:#fff}
+#printreport{display:none}
+@media print{
+  @page{margin:12mm}
+  body{background:#fff !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body > *:not(#printreport){display:none !important}
+  #printreport{display:block !important;color:#010101;font-family:Montserrat,Arial,sans-serif}
+  #printreport .rhead{background:#010101;border-bottom:5px solid #FFCC00;text-align:center;padding:14px 10px 10px;margin-bottom:12px}
+  #printreport .rhead h1{color:#FFCC00;font-size:22px;margin:0;text-transform:uppercase}
+  #printreport .rhead div{color:#fff;font-size:11px;margin-top:5px}
+  #printreport .cards{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+  #printreport .cards .card{flex:1 1 20%;width:auto;max-width:none;margin:0;box-sizing:border-box;border:1px solid #ddd;border-top:4px solid #FFCC00;border-radius:0;padding:8px 10px;min-width:100px;background:#fff;text-align:center;color:#010101}
+  #printreport .card .big{color:#010101}
+  #printreport .card .big{font-size:22px;font-weight:700}
+  #printreport .takeaways{border:1px solid #ddd;border-left:6px solid #FFCC00;margin:0 0 12px;padding:8px 14px;font-size:12px;break-inside:avoid}
+  #printreport .takeaways h3{margin:0 0 6px;font-size:14px}
+  #printreport figure{margin:0 0 14px;break-inside:avoid;page-break-inside:avoid}
+  #printreport figure img{width:100%;display:block}
+}
 </style>
 </head>
 <body>
@@ -59,6 +77,7 @@ input[type=file]{display:none}
   </div>
   <p class="small" style="margin-top:22px;max-width:320px" id="firsttime">The first time, the app downloads about 45 MB of Python tools, then it opens offline.</p>
 </div>
+<div id="printreport"></div>
 <div id="viewer">
   <div id="viewbar"><button id="newfile">&lsaquo; New file</button><span id="viewname"></span></div>
   <iframe id="frame" title="Dashboard"></iframe>
@@ -182,7 +201,13 @@ input[type=file]{display:none}
     Object.keys(b || {}).forEach(function (n) { var e = b[n]; if (e && typeof e.t === 'number' && (!out[n] || e.t >= out[n].t)) { out[n] = { days: Array.isArray(e.days) ? e.days : null, t: e.t }; } });
     return out;
   }
+  window.addEventListener('afterprint', function () { $('printreport').innerHTML = ''; });
   window.addEventListener('message', function (ev) {
+    if (ev.data && ev.data.slc === 'print' && typeof ev.data.html === 'string' && ev.source === $('frame').contentWindow) {
+      $('printreport').innerHTML = ev.data.html;          // the dashboard sends its report; print it from the top page (iPhone prints the iframe badly)
+      setTimeout(function () { window.print(); }, 400);
+      return;
+    }
     if (ev.source !== $('frame').contentWindow || !ev.data) return;
     if (ev.data.slc === 'schedules-get') { ev.source.postMessage({ slc: 'schedules', data: readSch() }, '*'); }
     else if (ev.data.slc === 'schedules-save') {

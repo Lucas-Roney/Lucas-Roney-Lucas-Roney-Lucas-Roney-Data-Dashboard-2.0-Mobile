@@ -625,11 +625,13 @@ def write_dashboard(sections, notes, heading, subtitle, csv_path, filename):
         marker = "<script></script>"
         if phone:
             html = re.sub(r"<!--NM-->.*?<!--/NM-->", "", html, flags=re.S)      # buttons that need the computer's helper
+            html = html.replace("<!--PH-->", "").replace("<!--/PH-->", "")     # phone-only pieces (the PDF button)
             html = html.replace('<meta charset="utf-8">', '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">', 1)
             html = html.replace("</style><script>", MOBILE_CSS + "</style><script>" + MOBILE_JS, 1)
             html = html.replace('<div class="tabs">', MOBILE_NOTE + '<div class="tabs">', 1)
             html = html.replace("<title>SLC Data Dashboard</title>", "<title>SLC Data Dashboard (phone)</title>", 1)
         else:
+            html = re.sub(r"<!--PH-->.*?<!--/PH-->", "", html, flags=re.S)
             html = html.replace("</body>", reload_script_html() + "</body>")
         return html.replace(marker, "<script>" + plotly_js + "</script>", 1)
 
@@ -1414,8 +1416,14 @@ def merge_schedules(saved, new):
             days = sorted(set(days))
         if not isinstance(t, (int, float)):
             continue
+        exc = {}
+        for key in ("off", "on"):        # single dates taken off (called out) or added on top of the weekly pattern
+            vals = e.get(key) or []
+            if not isinstance(vals, list) or len(vals) > 1000 or not all(isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) for v in vals):
+                vals = []
+            exc[key] = sorted(set(vals))
         if name not in out or t >= out[name].get("t", 0):
-            out[name] = {"days": days, "t": t}
+            out[name] = {"days": days, "off": exc["off"], "on": exc["on"], "t": t}
     return out
 
 
@@ -1632,7 +1640,8 @@ UPLOADER_CSS = """<style>
 .slcup .term .line{display:flex;align-items:center;gap:12px;font:14px/1 Menlo,Consolas,'DejaVu Sans Mono',monospace;color:#fff;min-height:24px;white-space:nowrap}
 .slcup .spin{flex:0 0 auto;width:13px;height:13px;border:2px solid #FFCC00;border-top-color:transparent;border-radius:50%;animation:slcspin .8s linear infinite}
 @keyframes slcspin{to{transform:rotate(360deg)}}
-.slcup .lab{flex:0 0 auto;width:34ch;overflow:hidden}
+.slcup .lab{flex:1 1 auto;min-width:38ch;white-space:nowrap}
+.slcup .sc{flex:0 0 auto;width:6ch;text-align:right;color:#bdbdbd}
 .slcup .pb{flex:0 0 auto;display:flex;align-items:stretch;height:16px;padding:0 3px;border-left:2px solid #FFCC00;border-right:2px solid #FFCC00}
 .slcup .pb i{display:block;width:9px;height:100%;margin-right:1px;background:#2b2b2b}
 .slcup .pb i.f{background:#FFCC00}.slcup .pb i.gl{background:#fff}.slcup .pb i.hd{background:#FFCC00;opacity:.5}
@@ -1659,34 +1668,43 @@ Dates it covers (optional, e.g. Aug 2025 - May 2026): <input type="text" id="slc
 <script>
 (function(){
 var TOKEN="__TOKEN__",$=function(i){return document.getElementById(i);};
-var SPIN="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",N=26,shown=0,target=0,ceil=0,label="Starting",tick=0,anim=null,poll=null,busy=false,go=false,picked=null;
+var SPIN="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",N=26,t0=Date.now(),fails=0,shown=0,target=0,ceil=0,label="Starting",tick=0,anim=null,poll=null,busy=false,go=false,picked=null;
 function esc(t){return t.replace(/&/g,"&amp;").replace(/</g,"&lt;");}
+var built=false,segs=[];
+function buildLine(){      // made once: re-creating these elements every frame would restart the spinner's animation and freeze it
+  var line=$("slcline");line.innerHTML='<span class="spin"></span><span class="lab" id="slclab"></span><span class="sc" id="slcsc"></span><span class="pb" id="slcpb"></span><span class="pc" id="slcpc"></span>';
+  var pb=$("slcpb");segs=[];for(var i=0;i<N;i++){var e=document.createElement("i");pb.appendChild(e);segs.push(e);}built=true;
+}
 function render(){
-  var filled=Math.round(shown*N),glint=Math.floor(tick/2)%(N+8)-4,bar="";
+  if(!built||!$("slcpb")){buildLine();}
+  var filled=Math.round(shown*N),glint=Math.floor(tick/2)%(N+8)-4;
   for(var i=0;i<N;i++){
-    if(i<filled){bar+='<i class="'+(Math.abs(i-glint)<=1?'gl':'f')+'"></i>';}
-    else if(i===filled&&filled<N&&tick%6<3){bar+='<i class="hd"></i>';}
-    else{bar+='<i></i>';}
+    var c="";
+    if(i<filled){c=Math.abs(i-glint)<=1?"gl":"f";}
+    else if(i===filled&&filled<N&&tick%6<3){c="hd";}
+    if(segs[i].className!==c){segs[i].className=c;}
   }
-  var dots=label==="Done"?"":".".repeat(Math.floor(tick/5)%4);
-  $("slcline").innerHTML='<span class="spin"></span><span class="lab">'+esc(label+dots)+'</span><span class="pb">'+bar+'</span><span class="pc">'+Math.floor(shown*100)+'%</span>';
+  var dots=label==="Done"?"":".".repeat(Math.floor(tick/5)%4),secs=Math.floor((Date.now()-t0)/1000);
+  $("slclab").textContent=label+dots;$("slcsc").textContent=(label==="Done"||secs<4)?"":"("+secs+"s)";
+  $("slcpc").textContent=Math.floor(shown*100)+"%";
 }
 function frame(){
-  var gap=target-shown;
-  if(gap>0.002){shown+=gap*0.18;}else if(ceil>shown+0.01){shown+=0.0012;}
-  shown=Math.min(shown,label==="Done"?1:0.99);tick++;render();
+  var gap=target-shown,limit=Math.max(ceil,target+0.06);       // always creeping toward the next stage, so it never looks frozen
+  if(gap>0.002){shown+=gap*0.18;}else if(limit>shown+0.005){shown+=Math.max(0.0003,(limit-shown)*0.0035);}
+  shown=Math.min(shown,label==="Done"?1:0.97);tick++;render();
 }
-function startAnim(){shown=0;target=0;ceil=0;label="Starting";$("slcterm").style.display="";if(!anim){anim=setInterval(frame,70);}}
+function startAnim(){if(anim){return;}t0=Date.now();fails=0;shown=0;target=0;ceil=0;label="Starting";$("slcterm").style.display="";anim=setInterval(frame,70);}
 function stopAnim(){clearInterval(anim);anim=null;}
 function fail(msg){stopAnim();clearInterval(poll);busy=false;$("slcterm").style.display="none";$("slcdz").style.display="";$("slcerr").textContent=msg;}
 function watch(){
   clearInterval(poll);
   poll=setInterval(function(){
     fetch("/progress?token="+TOKEN).then(function(r){return r.json();}).then(function(p){
-      if(p.status==="building"){busy=true;go=true;target=Math.max(target,p.frac||0);ceil=p.ceiling||0;if(p.label){label=p.label;}$("slcdz").style.display="none";$("slcterm").style.display="";if(!anim){startAnim();}}
+      fails=0;
+      if(p.status==="building"){busy=true;go=true;target=Math.max(target,p.frac||0);ceil=p.ceiling||0;if(p.label){label=p.label;}$("slcdz").style.display="none";$("slcterm").style.display="";startAnim();}
       else if(p.status==="done"&&go){clearInterval(poll);target=1;label="Done";shown=1;render();setTimeout(function(){stopAnim();var u=new URL(location.href);location.href="/dashboard?token="+TOKEN+"&r="+Date.now();},700);}
       else if(p.status==="error"){go=false;fail(p.message||"That file could not be used.");}
-    }).catch(function(){fail("Lost contact with the program. Is its window still open?");});
+    }).catch(function(){if(++fails>=8){fail("Lost contact with the program. Is its window still open?");}});
   },400);
 }
 function send(file,dates){
@@ -1761,15 +1779,19 @@ def uploader_html(token, skin="", done=""):
     return UPLOADER_CSS + UPLOADER_HTML.replace("__TOKEN__", token).replace("__SKIN__", skin).replace("__DONE__", done)
 
 
+PHONE_APP_URL = "https://lucas-roney.github.io/Lucas-Roney-Lucas-Roney-Lucas-Roney-Data-Dashboard-2.0-Mobile/"
+
+
 def new_csv_tab_html():
     """The 'Load new CSV' tab on the dashboard (only exists while the launcher is running)."""
     name = _html.escape(os.path.basename(csv_path))
     token = _launch["token"]
+    note = ('<div class="note" style="margin:14px 0 10px">Choose another export and the dashboard rebuilds with it. '
+            'This page then reloads by itself.</div>')
     links = (f'Showing <b>{name}</b>. Download this dashboard to keep or share: '
              f'<a href="/download?token={token}&which=desktop">computer version</a> or '
-             f'<a href="/download?token={token}&which=phone">phone version</a>.')
-    return ('<div class="note" style="margin-top:14px">Choose another export and the dashboard rebuilds with it. '
-            'This page then reloads by itself.</div>' + uploader_html(token, "", links))
+             f'<a href="{PHONE_APP_URL}" target="_blank" rel="noopener">phone version</a>.')
+    return uploader_html(token, "", note + links)
 
 
 def run_launcher():
@@ -2078,6 +2100,7 @@ complete_days = open_days[open_days <= last_complete]
 in_term = df[(df["Date"] >= start) & (df["Date"] <= end)]
 d = in_term[in_term["Date"].dt.dayofweek.isin(OPEN_WEEKDAYS)].copy()          # visits on open days
 d_done = d[d["Date"] <= last_complete]                                          # finished open days only
+all_done = in_term[in_term["Date"] <= last_complete]                          # finished days of ANY weekday (appointments run Fri-Sun too)
 n_before_start = int((df["Date"] < start).sum())
 has_people = df["Student"].notna().any()
 has_consultants = df["Consultant"].notna().any()
@@ -2208,8 +2231,8 @@ holiday_days = [t for t in open_days if daily_all[t] == 0 and t <= last_complete
 plot_days = pd.DatetimeIndex(sorted((set(open_days) | set(weekend_with_visits)) - set(holiday_days)))
 ts_all = daily_counts(in_term, plot_days)
 ts_open = ts_all[ts_all.index.dayofweek.isin(OPEN_WEEKDAYS)]
-partial_last_fc = bool(end == today and len(open_days) and open_days[-1] == today)
-ts_fc = daily_counts(d, open_days)       # regular open days only (zeros kept): this is what the forecasts learn from
+partial_last_fc = bool(end == today and len(plot_days) and plot_days[-1] == today)
+ts_fc = daily_counts(in_term, plot_days)   # every day with visits (weekends and Fridays included); zero-visit days are removed, not learned from
 partial_last = bool(end == today and len(plot_days) and plot_days[-1] == today)
 figs["overall"] = visits_figure(
     ts_all, "Daily and Total Visits", stl_summary(ts_open[ts_open.index <= last_complete], int(ts_open[ts_open.index <= last_complete].sum())),
@@ -2262,82 +2285,200 @@ for p, s in subject_series.items():
 
 # ---------- Daily forecast: three methods ----------
 SEASON = STL_PERIOD                      # one season = one open week (4 open days)
-METHOD_COLORS = {"ets": AS_LAKE, "arima": AS_BRICK, "stl": AS_DGOLD}
+METHOD_COLORS = {"ets": AS_LAKE, "arima": AS_BRICK, "comb": AS_DGOLD}
 fc_tabs = []                             # (tab label, figure, note)
 
 
 CLOSED_TS = pd.DatetimeIndex(pd.to_datetime(CLOSED_DATES)) if CLOSED_DATES else pd.DatetimeIndex([])
 
 
+WD_SHRINK = 0.5                         # weekday effects come from only ~10 days each, so they are trusted at half strength
+RECENT_CAL_DAYS = 14                    # "recent" = the last two weeks
+BENCH_CAL_DAYS = 28                     # benchmark window = the last four weeks
+
+
+def _train_index(n):
+    return ts_fit.index[:n]
+
+
+def day_factors(clean_tr, n):
+    """How busy each weekday usually is compared with a regular open day (1.0 = average open day). Regular open
+    weekdays are pulled halfway back toward 1.0 because each has only a handful of observations. Other days that
+    had visits (weekends, Fridays) keep their own size, e.g. 0.1 means about a tenth of a regular open day."""
+    idx = _train_index(n)
+    dow = np.asarray(idx.dayofweek)
+    core = np.isin(dow, OPEN_WEEKDAYS)
+    base = float(clean_tr[core].mean()) if core.any() else 1.0
+    base = base or 1.0
+    out = {}
+    for wd in range(7):
+        m = dow == wd
+        raw = float(clean_tr[m].mean()) / base if m.any() else 1.0
+        out[wd] = max(1.0 + (raw - 1.0) * WD_SHRINK, 1e-3) if wd in OPEN_WEEKDAYS else max(raw, 1e-3)
+    return out
+
+
+def adjusted(train):
+    """Cleaned training data. The LEVEL is learned from regular open days only (each divided by its weekday factor);
+    weekend days that had visits are forecast as their own fraction of that level."""
+    clean_tr = np.asarray(train, float).copy()
+    n = len(clean_tr)
+    idx = _train_index(n)
+    wf = day_factors(clean_tr, n)
+    core = np.isin(np.asarray(idx.dayofweek), OPEN_WEEKDAYS)
+    adj = pd.Series(clean_tr[core] / np.array([wf[w] for w in np.asarray(idx.dayofweek)[core]]), index=idx[core])
+    return clean_tr, adj, wf
+
+
 def prep(train):
-    """Training series for the forecasting methods. An open weekday with zero visits is almost always a holiday or break
-    (the center was closed, not 'quiet'), so it is replaced by that weekday's typical value instead of being learned as a
-    real drop. Days listed in CLOSED_DATES are treated the same way."""
-    tr = np.asarray(train, float).copy()
-    idx = ts_fit.index[:len(tr)]
-    ok = ~((tr == 0) | np.asarray(idx.isin(CLOSED_TS)))
-    if not ok.any() or ok.all():
-        return tr
-    dow = np.asarray(idx.dayofweek)
-    for i in np.where(~ok)[0]:
-        same = ok & (dow == dow[i])
-        tr[i] = tr[same].mean() if same.any() else tr[ok].mean()
-    return tr
+    """Training series for the benchmark: zero-visit days are already removed from the data, so nothing to fix."""
+    return np.asarray(train, float)
 
 
-def weekday_factors(clean_tr, idx):
-    """How busy each weekday usually is compared with the average day (1.0 = average)."""
-    dow = np.asarray(idx.dayofweek)
-    base = clean_tr.mean() or 1.0
-    return {wd: max(float(clean_tr[dow == wd].mean()) / base, 1e-3) if (dow == wd).any() else 1.0 for wd in range(7)}
+def ets_fit(train, kind="SES"):
+    """Simple exponential smoothing on the weekday-adjusted series. Trend versions (Holt, damped Holt) were tested
+    and were clearly worse on daily visit data, so only a flat level is used."""
+    _, adj, wf = adjusted(train)
+    return ETSModel(adj.reset_index(drop=True), error="add").fit(disp=False), wf
 
 
-def ets_fit(train, kind):
-    """Exponential smoothing on the weekday-adjusted series (each day divided by how busy its weekday usually is)."""
-    kw = {"SES": dict(trend=None), "Holt": dict(trend="add"),
-          "Damped": dict(trend="add", damped_trend=True)}[kind]
-    clean_tr = prep(train)
-    idx = ts_fit.index[:len(clean_tr)]
-    wf = weekday_factors(clean_tr, idx)
-    adj = clean_tr / np.array([wf[d] for d in idx.dayofweek])
-    return ETSModel(pd.Series(adj), error="add", **kw).fit(disp=False), wf
+def _core_steps(train, future_dates):
+    """For each future date, how many regular open days after the training data have passed (at least 1)."""
+    last = _train_index(len(train))[-1]
+    fd = pd.DatetimeIndex(future_dates)
+    allf = pd.date_range(last + pd.Timedelta(days=1), fd.max())
+    cum = np.cumsum(np.isin(allf.dayofweek, OPEN_WEEKDAYS))
+    pos = {t: c for t, c in zip(allf, cum)}
+    return np.maximum([pos[t] for t in fd], 1)
 
 
 def ets_forecast(train, kind, future_dates):
     res, wf = ets_fit(train, kind)
-    mult = np.array([wf[d] for d in pd.DatetimeIndex(future_dates).dayofweek])
-    return np.asarray(res.forecast(len(future_dates))) * mult
+    level = float(np.asarray(res.forecast(1))[0])
+    return np.array([level * wf[w] for w in pd.DatetimeIndex(future_dates).dayofweek])
+
+
+def _recent_window(adj, days):
+    return adj[adj.index > adj.index[-1] - pd.Timedelta(days=days)].values
+
+
+def median_fit(train):
+    """Robust recent level: the MEDIAN of the weekday-adjusted open days from the last two weeks. One freak day (a 9 or
+    a 38 where 27 is normal) pulls an average a long way but barely moves a median, and typical-miss scores reward
+    exactly that. Returns (level, spread, factors); spread is a robust (MAD-based) day-to-day standard deviation."""
+    _, adj, wf = adjusted(train)
+    recent = _recent_window(adj, RECENT_CAL_DAYS)
+    if len(recent) < 3:
+        recent = adj.values[-RECENT_DAYS_MIN:]
+    level = float(np.median(recent))
+    window = _recent_window(adj, BENCH_CAL_DAYS)
+    if len(window) < 4:
+        window = adj.values[-8:]
+    spread = float(1.4826 * np.median(np.abs(window - np.median(window)))) or float(np.std(window)) or 1.0
+    return level, spread, wf
+
+
+RECENT_DAYS_MIN = 6
+
+
+def median_forecast(train, future_dates):
+    level, _, wf = median_fit(train)
+    return np.array([level * wf[w] for w in pd.DatetimeIndex(future_dates).dayofweek])
+
+
+def _core_calendar(train):
+    """The regular open days as one calendar series. Days that were removed (zero visits: holidays, breaks) stay in the
+    calendar as gaps (NaN) so every 'same weekday last week' still lines up; the ARIMA model handles gaps natively."""
+    tr = np.asarray(train, float)
+    idx = _train_index(len(tr))
+    core = np.isin(np.asarray(idx.dayofweek), OPEN_WEEKDAYS)
+    ser = pd.Series(tr[core], index=idx[core])
+    full = pd.date_range(ser.index[0], ser.index[-1])
+    full = full[np.isin(full.dayofweek, OPEN_WEEKDAYS)]
+    return ser.reindex(full)
 
 
 def auto_sarima(train, max_pq=2, max_PQ=1):
-    """Seasonally differenced ARIMA: one seasonal difference (D=1) at the open-week length, regular
-    differencing chosen with a KPSS test, then the (p,q,Q) with the lowest AICc. Fitted on the cleaned series
-    (closed days replaced); no seasonal AR term, which is not stable with only a few weeks of data."""
-    tr = prep(train)
-    seasonal_diff = tr[SEASON:] - tr[:-SEASON]
+    """Seasonal ARIMA: one seasonal difference (D=1) at the open-week length, regular differencing chosen with a KPSS
+    test, then the (p,q,Q) with the lowest AICc. No seasonal AR term, which is not stable with only a few weeks of data."""
+    ser = _core_calendar(train)
+    arr = ser.values
+    sd = arr[SEASON:] - arr[:-SEASON]
+    sd = sd[~np.isnan(sd)]
     try:
-        d = 1 if kpss(seasonal_diff, regression="c", nlags="auto")[1] < 0.05 else 0
+        d = 1 if kpss(sd, regression="c", nlags="auto")[1] < 0.05 else 0
     except Exception:
         d = 0
     best = None
-    for p in range(max_pq + 1):
-        for q in range(max_pq + 1):
-            for Q in range(max_PQ + 1):
+    for pp in range(max_pq + 1):
+        for qq in range(max_pq + 1):
+            for QQ in range(max_PQ + 1):
                 try:
-                    res = SARIMAX(tr, order=(p, d, q), seasonal_order=(0, 1, Q, SEASON)).fit(disp=False, maxiter=100)
+                    res = SARIMAX(arr, order=(pp, d, qq), seasonal_order=(0, 1, QQ, SEASON)).fit(disp=False, maxiter=100)
                     aicc = res.aicc
                 except Exception:
                     continue
                 if np.isfinite(aicc) and (best is None or aicc < best[0]):
-                    best = (aicc, (p, d, q), (0, 1, Q, SEASON), res)
+                    best = (aicc, (pp, d, qq), (0, 1, QQ, SEASON), res, ser.index[-1])
+    if best is None:
+        raise ValueError("SARIMA did not fit")
     return best
 
 
-def stl_naive_fit(train):
-    """STL decomposition; the weekly pattern is forecast with a seasonal naive (repeat the latest week) and the
-    seasonally adjusted part with simple exponential smoothing, ARIMA(0,1,1)."""
-    return STLForecast(pd.Series(prep(train)), ARIMA, model_kwargs=dict(order=(0, 1, 1)),
-                       period=SEASON, robust=True).fit()
+def sarima_points(best, future_dates, alpha=None):
+    """Forecast the given dates from a fitted SARIMA. Regular open days come straight from the model; a weekend or
+    Friday is its usual fraction of the coming open week's average day."""
+    res, last_core = best[3], best[4]
+    fd = pd.DatetimeIndex(future_dates)
+    cal = pd.date_range(last_core + pd.Timedelta(days=1), fd.max() + pd.Timedelta(days=8))
+    cal = cal[np.isin(cal.dayofweek, OPEN_WEEKDAYS)]
+    n_ahead = max(len(cal), 1)
+    fc = res.get_forecast(n_ahead)
+    mean = np.asarray(fc.predicted_mean, float)
+    lo = hi = None
+    if alpha is not None:
+        ci = np.asarray(fc.conf_int(alpha=alpha), float)
+        lo, hi = ci[:, 0], ci[:, 1]
+    by_date = {t: i for i, t in enumerate(cal)}
+    out_m, out_l, out_h = [], [], []
+    for t in fd:
+        if t.dayofweek in OPEN_WEEKDAYS and t in by_date:
+            i = by_date[t]
+            out_m.append(mean[i]); out_l.append(lo[i] if lo is not None else 0); out_h.append(hi[i] if hi is not None else 0)
+        else:
+            after = [by_date[c] for c in cal if c > t][:len(OPEN_WEEKDAYS)] or list(range(min(len(OPEN_WEEKDAYS), n_ahead)))
+            base = float(np.mean(mean[after]))
+            wf = best[5].get(t.dayofweek, 1.0)
+            out_m.append(base * wf)
+            half = float(np.mean((hi[after] - lo[after]) / 2)) if lo is not None else 0.0
+            out_l.append(base * wf - half * wf); out_h.append(base * wf + half * wf)
+    return np.array(out_m), np.array(out_l), np.array(out_h)
+
+
+def sarima_forecast(train, future_dates, max_pq=1, max_PQ=1):
+    _, _, wf = adjusted(train)
+    best = auto_sarima(train, max_pq, max_PQ)
+    best = best + (wf,)
+    return sarima_points(best, future_dates)[0]
+
+
+def same_weekday_average(train, future_dates):
+    """The benchmark: for each day, the average of that same weekday over the previous four weeks."""
+    tr = np.asarray(train, float)
+    idx = _train_index(len(tr))
+    fallback = median_forecast(train, future_dates)
+    out = []
+    for t, fb in zip(pd.DatetimeIndex(future_dates), fallback):
+        m = (idx.dayofweek == t.dayofweek) & (idx > idx[-1] - pd.Timedelta(days=BENCH_CAL_DAYS))
+        out.append(float(tr[m].mean()) if m.any() else float(fb))
+    return np.array(out)
+
+
+def combined_forecast(train, future_dates):
+    """Average of exponential smoothing, seasonal ARIMA and the same-weekday four-week average (the benchmark).
+    Averaging forecasts that make different mistakes is the most reliable way to improve on any one of them."""
+    return (ets_forecast(train, "SES", future_dates) + sarima_forecast(train, future_dates)
+            + same_weekday_average(train, future_dates)) / 3.0
 
 
 def cv_metrics(y_all, forecaster):
@@ -2364,18 +2505,80 @@ ts_fit = ts_fc[ts_fc.index <= last_complete]
 yv = ts_fit.values.astype(float)
 n_fit = len(yv)
 
-if n_fit < MIN_DAYS_FOR_FORECAST:
+span_days = int((ts_fit.index[-1] - ts_fit.index[0]).days) + 1 if n_fit else 0
+FEW_DAYS = 14                           # two weeks of data or less: only a simple weekday average is offered
+FEW_WEEKS = 35                          # up to five weeks: the report card holds out the last week; beyond: the last two
+
+if n_fit < 2:
     fc_tabs.append(("Forecast", make_note_fig(
-        "Daily Forecast", f"Not enough open days yet (need {MIN_DAYS_FOR_FORECAST}, have {n_fit})."), ""))
+        "Daily Forecast", "Not enough days with visits yet to forecast anything."), ""))
+elif span_days <= FEW_DAYS:
+    # ---- Two weeks of data or less: a plain weekday average, with a clear warning ----
+    core_vals = ts_fit[ts_fit.index.dayofweek.isin(OPEN_WEEKDAYS)]
+    overall = float(core_vals.mean()) if len(core_vals) else float(ts_fit.mean())
+    extra_wd = [wd for wd in range(7) if wd not in OPEN_WEEKDAYS and int((ts_fit.index.dayofweek == wd).sum()) >= 2]
+    wds = sorted(set(OPEN_WEEKDAYS) | set(extra_wd))
+    fdates = pd.DatetimeIndex([t for t in pd.date_range(last_complete + pd.Timedelta(days=1), periods=21)
+                               if t.dayofweek in wds])
+    means = []
+    for t in fdates:
+        same = ts_fit[ts_fit.index.dayofweek == t.dayofweek]
+        means.append(float(same.mean()) if len(same) else overall)
+    means = np.array(means)
+    keep = (~fdates.isin(CLOSED_TS)).astype(float)
+    means = means * keep
+    sd = float(core_vals.std(ddof=1)) if len(core_vals) >= 3 else 0.0
+    lo = np.maximum(means - 1.2816 * sd, 0) * keep
+    hi = (means + 1.2816 * sd) * keep
+    shown = pd.DatetimeIndex(sorted(set(ts_fit.index) | set(fdates)))
+    gone = [t.strftime("%Y-%m-%d") for t in pd.date_range(shown.min(), shown.max()) if t not in shown]
+    fx = list(fdates)
+    r, g, b = [int(AS_DGOLD[i:i + 2], 16) for i in (1, 3, 5)]
+    f = make_subplots(rows=1, cols=2, column_widths=[0.68, 0.32], horizontal_spacing=0.04,
+                      specs=[[{"type": "xy"}, {"type": "table"}]])
+    f.add_trace(go.Scatter(x=fx + fx[::-1], y=list(hi) + list(lo[::-1]), mode="lines", fill="toself",
+                           fillcolor=f"rgba({r},{g},{b},0.25)", line=dict(width=0), name="Rough range", hoverinfo="skip"), row=1, col=1)
+    f.add_trace(go.Scatter(
+        x=ts_fit.index, y=ts_fit.values, mode="lines+markers", name="Actual visits",
+        line=dict(width=2, color=C_INK), marker=dict(size=8, color=AS_GOLD, line=dict(width=1.5, color=C_INK)),
+        hovertemplate="Actual visits: %{y:.0f}<extra></extra>"), row=1, col=1)
+    f.add_trace(go.Scatter(
+        x=[ts_fit.index[-1], fx[0]], y=[float(ts_fit.iloc[-1]), float(means[0])], mode="lines",
+        line=dict(width=3, color=AS_DGOLD, dash="dash"), showlegend=False, hoverinfo="skip"), row=1, col=1)
+    f.add_trace(go.Scatter(
+        x=fx, y=means, mode="lines+markers", name="Weekday average", line=dict(width=3, color=AS_DGOLD, dash="dash"),
+        marker=dict(size=7, color=AS_DGOLD), hovertemplate="Weekday average: about %{y:.0f} visits<extra></extra>"), row=1, col=1)
+    f.update_xaxes(rangebreaks=[dict(values=gone)] if gone else [], tickformat="%b %d", hoverformat="%A, %b %d", row=1, col=1)
+    f.update_yaxes(title_text="Visits per day", rangemode="tozero", row=1, col=1)
+    f.add_trace(go.Table(
+        header=table_header(["Day", "Expected visits"], 12),
+        cells=table_cells([[f"{t:%a %b %d}" for t in fx], [f"{v:.0f}" for v in means]], 12, height=24)), row=1, col=2)
+    f.update_layout(title=dict(text="Daily Visits Forecast: Simple Weekday Average"), height=640,
+                    margin=dict(l=70, r=40, t=120, b=50), legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+    few_note = (
+        "<b>Caution: two weeks of data or less is not enough to produce accurate results.</b> Until more weeks come in, the "
+        "forecast is just a simple weekday average: each day is predicted as the average of every earlier visit count on "
+        "that same weekday (for example, if the first Monday had 10 visits and the second had 20, the next Monday is "
+        "forecast at 15). The shaded band is only a rough guide to how much days have varied so far. With more data the "
+        "dashboard switches on exponential smoothing, seasonal ARIMA and a combined forecast, and adds a report card.")
+    fc_tabs.append(("Weekday average", f, few_note))
 else:
     LOADER.step(0.3, "Testing the forecast methods", ceiling=0.4)
-    H = FORECAST_DAYS
-    fdates, cur = [], last_complete + pd.Timedelta(days=1)
-    while len(fdates) < H:
-        if cur.dayofweek in OPEN_WEEKDAYS:
-            fdates.append(cur)
-        cur += pd.Timedelta(days=1)
-    fdates = pd.DatetimeIndex(fdates)
+    CV_INIT = min(CV_INIT, max(6, n_fit // 2))        # a short history needs an earlier start for the accuracy test
+    # Days to forecast: every regular open weekday, plus any other weekday (Fri-Sun) that has had visits on at least
+    # two separate days. Three calendar weeks ahead.
+    extra_wd = [wd for wd in range(7) if wd not in OPEN_WEEKDAYS and int((ts_fit.index.dayofweek == wd).sum()) >= 2]
+    FC_WEEKDAYS = sorted(set(OPEN_WEEKDAYS) | set(extra_wd))
+    fdates = pd.DatetimeIndex([t for t in pd.date_range(last_complete + pd.Timedelta(days=1), periods=21)
+                               if t.dayofweek in FC_WEEKDAYS])
+    H = len(fdates)
+
+    def fc_breaks(*dates):
+        """Hide the calendar days that are not shown (closed days), so weekends only take up room when they have data."""
+        shown = pd.DatetimeIndex(sorted(set().union(*[set(pd.DatetimeIndex(x)) for x in dates])))
+        span = pd.date_range(shown.min(), shown.max())
+        gone = [t.strftime("%Y-%m-%d") for t in span if t not in shown]
+        return [dict(values=gone)] if gone else []
 
     def make_frame(mean, lo80, hi80, lo95, hi95):
         keep = (~fdates.isin(CLOSED_TS)).astype(float)         # days listed in CLOSED_DATES are forecast as 0
@@ -2384,48 +2587,45 @@ else:
                              "hi80": np.maximum(np.asarray(hi80, float), 0), "lo95": np.maximum(np.asarray(lo95, float), 0),
                              "hi95": np.maximum(np.asarray(hi95, float), 0)}, index=fdates)
 
-    # --- 1. Exponential smoothing: SES vs Holt vs damped Holt, chosen by cross-validation ---
-    ets_kinds = {"SES": "Simple smoothing (SES)", "Holt": "Holt (trend)", "Damped": "Damped Holt (fading trend)"}
+    # --- 1. Exponential smoothing (flat level on the weekday-adjusted series) ---
     acc = {}
-    for k in ets_kinds:
-        acc[ets_kinds[k]] = cv_metrics(yv, lambda tr, k=k: ets_forecast(tr, k, ts_fit.index[len(tr):len(tr) + 1]))
-    scored = {k: acc[ets_kinds[k]]["RMSE"] for k in ets_kinds if acc[ets_kinds[k]]}
-    best_kind = min(scored, key=scored.get) if scored else "SES"
-    ets_res, ets_wf = ets_fit(yv, best_kind)
-    ets_mult = np.array([ets_wf[d] for d in fdates.dayofweek])
-    p80 = ets_res.get_prediction(start=n_fit, end=n_fit + H - 1).summary_frame(alpha=0.20)
-    p95 = ets_res.get_prediction(start=n_fit, end=n_fit + H - 1).summary_frame(alpha=0.05)
-    fc_ets = make_frame(p80["mean"] * ets_mult, p80["pi_lower"] * ets_mult, p80["pi_upper"] * ets_mult,
-                        p95["pi_lower"] * ets_mult, p95["pi_upper"] * ets_mult)
+    acc["Exponential smoothing"] = cv_metrics(yv, lambda tr: ets_forecast(tr, "SES", ts_fit.index[len(tr):len(tr) + 1]))
+    ets_res, ets_wf = ets_fit(yv)
+    ets_mult = np.array([ets_wf[w] for w in fdates.dayofweek])
+    steps = _core_steps(yv, fdates)
+    Hc = int(steps.max())
+    p80 = ets_res.get_prediction(start=ets_res.nobs, end=ets_res.nobs + Hc - 1).summary_frame(alpha=0.20)
+    p95 = ets_res.get_prediction(start=ets_res.nobs, end=ets_res.nobs + Hc - 1).summary_frame(alpha=0.05)
+    pick = lambda frame, col: frame[col].values[steps - 1] * ets_mult
+    fc_ets = make_frame(pick(p80, "mean"), pick(p80, "pi_lower"), pick(p80, "pi_upper"),
+                        pick(p95, "pi_lower"), pick(p95, "pi_upper"))
 
-    # --- 2. Seasonally differenced ARIMA ---
-    sar = auto_sarima(yv, 2, 1)
-    fc_sar = None
-    if sar is not None:
-        sres = sar[3]
-        fcs = sres.get_forecast(H)
-        c80, c95 = np.asarray(fcs.conf_int(alpha=0.20)), np.asarray(fcs.conf_int(alpha=0.05))
-        fc_sar = make_frame(np.asarray(fcs.predicted_mean), c80[:, 0], c80[:, 1], c95[:, 0], c95[:, 1])
-        acc["Seasonal ARIMA"] = cv_metrics(yv, lambda tr: auto_sarima(tr, 1, 1)[3].forecast(1))
-
-    # --- 3. STL decomposition + seasonal naive / naive ---
-    fc_stl = None
+    # --- 2. Seasonal ARIMA (zero-visit days left as gaps so the weekly rhythm stays lined up) ---
+    fc_sar, sar_best = None, None
     try:
-        stl_res = stl_naive_fit(yv)
-        q80 = stl_res.get_prediction(start=n_fit, end=n_fit + H - 1).summary_frame(alpha=0.20)
-        q95 = stl_res.get_prediction(start=n_fit, end=n_fit + H - 1).summary_frame(alpha=0.05)
-        fc_stl = make_frame(q80["mean"], q80["mean_ci_lower"], q80["mean_ci_upper"],
-                            q95["mean_ci_lower"], q95["mean_ci_upper"])
-        acc["STL + naive"] = cv_metrics(yv, lambda tr: stl_naive_fit(tr).forecast(1))
+        sar_best = auto_sarima(yv, 2, 1) + (day_factors(yv, len(yv)),)
+        m_, l80, h80 = sarima_points(sar_best, fdates, 0.20)
+        _, l95, h95 = sarima_points(sar_best, fdates, 0.05)
+        fc_sar = make_frame(m_, l80, h80, l95, h95)
+        acc["Seasonal ARIMA"] = cv_metrics(yv, lambda tr: sarima_forecast(tr, ts_fit.index[len(tr):len(tr) + 1]))
     except Exception:
         pass
 
-    acc["Simple average (last 4 weeks)"] = cv_metrics(yv, lambda tr: [float(np.mean(prep(tr)[-4 * len(OPEN_WEEKDAYS):]))])
+    # --- 3. Combined: smoothing + seasonal ARIMA + same-weekday average ---
+    fc_comb = None
+    if fc_sar is not None:
+        cmean = (fc_ets["mean"].values + fc_sar["mean"].values + same_weekday_average(yv, fdates)) / 3.0
+        def _rng(col):
+            return (fc_ets[col].values - fc_ets["mean"].values + fc_sar[col].values - fc_sar["mean"].values) / 2.0
+        fc_comb = make_frame(cmean, cmean + _rng("lo80"), cmean + _rng("hi80"), cmean + _rng("lo95"), cmean + _rng("hi95"))
+        acc["Combined"] = cv_metrics(yv, lambda tr: combined_forecast(tr, ts_fit.index[len(tr):len(tr) + 1]))
+
+    acc["Simple average (same weekday, last 4 weeks)"] = cv_metrics(yv, lambda tr: same_weekday_average(tr, ts_fit.index[len(tr):len(tr) + 1]))
     methods = [("Exponential smoothing", "ets", fc_ets)]
     if fc_sar is not None:
         methods.append(("Seasonal ARIMA", "arima", fc_sar))
-    if fc_stl is not None:
-        methods.append(("STL + naive", "stl", fc_stl))
+    if fc_comb is not None:
+        methods.append(("Combined", "comb", fc_comb))
 
     def day_label(t):
         return f"{t:%a %b %d}"
@@ -2458,7 +2658,7 @@ else:
             hovertemplate=tmpl), row=row, col=col)
 
     def style_axes(fig, row, col):
-        fig.update_xaxes(rangebreaks=[dict(bounds=["fri", "mon"])], tickformat="%b %d", hoverformat="%A, %b %d",
+        fig.update_xaxes(rangebreaks=fc_breaks(ts_fit.index, fdates), tickformat="%b %d", hoverformat="%A, %b %d",
                          row=row, col=col)
         fig.update_yaxes(title_text="Visits per day", rangemode="tozero", row=row, col=col)
 
@@ -2487,15 +2687,15 @@ else:
                       margin=dict(l=70, r=40, t=120, b=40), legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
     n_folds = acc_rows[0][1]["N"] if acc_rows else 0
     compare_note = (
-        f"Each method forecasts the next {H} open days (three open weeks, Monday to Thursday). The table on the right "
+        f"Each method forecasts the next {H} days (three weeks: regular open days, plus any weekend or Friday that has had visits). The table on the right "
         f"is a past-accuracy test: for each of the {n_folds} days since day {CV_INIT + 1}, every method was refit using "
         "only the earlier days and asked to guess that day (one day ahead). 'Average miss' is how many visits off its "
         "guess typically was, RMSE is similar but punishes big misses harder, and Bias is positive when a method tends "
         "to guess too low. The highlighted row had the lowest RMSE. Daily visits are noisy, so expect misses of several "
         "visits a day from any method, and a method that wins a short test is not guaranteed to keep winning. The "
-        "'Simple average' row is the bar to beat: it just predicts the average of the last four open weeks every day. "
-        "Days with zero visits on a normal open weekday are treated as closed (holiday or break): they are left out of "
-        "what the methods learn from and out of the accuracy score. To give the forecast a known closed day, add it to "
+        "'Simple average' row is the bar to beat: it predicts each day as the average of that same weekday over the last four weeks. "
+        "Days with zero visits are treated as closed (holiday or break) and removed: they are not learned from and not "
+        "scored. Weekends and Fridays are included whenever they had visits. To give the forecast a known closed day, add it to "
         "CLOSED_DATES in the script settings. Exam weeks and other busy or quiet periods are not known to the methods.")
     fc_tabs.append(("Compare methods", fig, compare_note))
 
@@ -2526,70 +2726,62 @@ else:
 
     ets_note = (
         "Exponential smoothing gives the most weight to the most recent days. Each day is first divided by how busy its "
-        "weekday usually is, so Mondays and Thursdays are not mistaken for rises and falls, and the weekday pattern is put "
-        "back on the forecast. Three versions were tested with the same "
-        "past-accuracy test as in the Compare tab: simple smoothing (SES, a flat level), Holt (level plus a straight-line "
-        f"trend) and damped Holt (a trend that fades out). The one with the lowest RMSE, {ets_kinds[best_kind]}, is "
-        f"shown here. Its settings: level smoothing (alpha) = {num(getattr(ets_res, 'smoothing_level', None))}, "
-        f"trend smoothing (beta) = {num(getattr(ets_res, 'smoothing_trend', None))}, "
-        f"damping (phi) = {num(getattr(ets_res, 'damping_trend', None))}. "
+        "weekday usually is (trusted at half strength, since each weekday has only a handful of days behind it), so "
+        "Mondays and Thursdays are not mistaken for rises and falls, and the weekday pattern is put back on the forecast. "
+        "Trend versions (Holt and damped Holt) were tested too and did clearly worse on daily visits, because they carry "
+        "a recent rise or fall forward indefinitely; only the flat level is used. "
+        f"Level smoothing (alpha) = {num(getattr(ets_res, 'smoothing_level', None))}. "
         "An alpha near 0 means the model treats all days about equally instead of chasing the latest day; "
         "an alpha near 1 means it follows the latest day closely.")
     fc_tabs.append(("Exponential smoothing", method_fig("Exponential smoothing", "ets", fc_ets), ets_note))
     if fc_sar is not None:
-        (pp, dd, qq), (PP, DD, QQ, ss) = sar[1], sar[2]
+        (pp, dd, qq), (PP, DD, QQ, ss) = sar_best[1], sar_best[2]
         arima_note = (
-            f"This method compares each day with the same weekday one week earlier (a seasonal difference over the "
-            f"{SEASON} open days in a week), then models what is left. The settings were chosen automatically: "
-            f"ARIMA({pp},{dd},{qq})({PP},{DD},{QQ})[{ss}], where the {SEASON} in brackets is the number of open days "
-            "per week. It tends to repeat the weekly pattern it saw recently.")
+            f"This method compares each regular open day with the same weekday one week earlier (a seasonal difference "
+            f"over the {SEASON} open days in a week), then models what is left. Days with zero visits (holidays, breaks) "
+            f"are left as gaps, so the weekly rhythm stays lined up. The settings were chosen automatically: "
+            f"ARIMA({pp},{dd},{qq})({PP},{DD},{QQ})[{ss}], where the {SEASON} in brackets is the number of open days per week. "
+            "Weekends and Fridays that had visits are forecast as their usual fraction of the coming open week.")
         fc_tabs.append(("Seasonal ARIMA", method_fig("Seasonal ARIMA", "arima", fc_sar), arima_note))
-    if fc_stl is not None:
-        stl_note = (
-            "This method splits the daily visits into a repeating weekly pattern, a smooth trend and leftover noise. "
-            "It repeats the most recent weekly pattern (seasonal naive) and projects the weekday-adjusted level with "
-            "simple exponential smoothing instead of a pure naive. A pure naive copies the last day, so one busy or quiet "
-            "day would carry straight into the whole forecast; smoothing averages over recent days. Repeating only the "
-            "latest week's pattern still makes this the noisiest of the three while only a few weeks of data exist.")
-        fc_tabs.append(("STL + naive", method_fig("STL + naive", "stl", fc_stl), stl_note))
+    if fc_comb is not None:
+        comb_note = (
+            "The average of three forecasts: exponential smoothing, seasonal ARIMA, and the same-weekday average of the "
+            "last four weeks. Each makes different mistakes, so averaging them cancels part of the error and is usually "
+            "more dependable than any single method. The ranges shown are the average of the smoothing and ARIMA ranges.")
+        fc_tabs.append(("Combined", method_fig("Combined", "comb", fc_comb), comb_note))
 
     # --- Forecast report card: how would each method have done in past weeks? ---
     # At the end of each past week, refit every method using only the data up to that point, forecast the next open
     # week, then compare with what really happened. Same procedures as the forecast tabs (ARIMA uses the smaller
     # search grid to keep run time short).
-    BENCH_DAYS = 4 * len(OPEN_WEEKDAYS)                       # benchmark: average of the previous four open weeks
-    week_len = len(OPEN_WEEKDAYS)
-    origins = [i for i in range(CV_INIT, n_fit - week_len + 1)
-               if ts_fit.index[i].dayofweek == OPEN_WEEKDAYS[0]]
+    origins = [i for i in range(4, n_fit)
+               if ts_fit.index[i].dayofweek == OPEN_WEEKDAYS[0]
+               and ts_fit.index[i] + pd.Timedelta(days=OPEN_WEEKDAYS[-1]) <= last_complete]
+    held_out = 1 if span_days <= FEW_WEEKS else 2        # 2 to 5 weeks of data: hold out the last week; more: the last two
+    origins = origins[-held_out:]
+    week_end = {i: int(ts_fit.index.searchsorted(ts_fit.index[i] + pd.Timedelta(days=7))) for i in origins}
     if len(origins) >= 1:
         LOADER.step(0.34, "Testing the forecast methods", ceiling=0.4)
-        names = {"ets": "Exponential smoothing", "arima": "Seasonal ARIMA", "stl": "STL + naive", "bench": "Simple average"}
+        names = {"ets": "Exponential smoothing", "arima": "Seasonal ARIMA", "comb": "Combined", "bench": "Simple average"}
         bt = {k: [] for k in names}
         bt_dates, bt_actual, bt_week = [], [], []
         for _k, i in enumerate(origins):
             LOADER.step(0.34 + 0.5 * _k / len(origins), "Testing the forecast methods", ceiling=0.34 + 0.5 * (_k + 1) / len(origins))
             train = yv[:i]
             preds = {}
-            try:
-                scores = {k: (cv_metrics(train, lambda tr, k=k: ets_forecast(tr, k, ts_fit.index[len(tr):len(tr) + 1])) or {}).get("RMSE", np.inf)
-                          for k in ets_kinds}
-                kind = min(scores, key=scores.get) if np.isfinite(min(scores.values())) else "SES"
-                preds["ets"] = np.asarray(ets_forecast(train, kind, ts_fit.index[i:i + week_len]), float)
-            except Exception:
-                preds["ets"] = np.full(week_len, np.nan)
-            try:
-                preds["arima"] = np.asarray(auto_sarima(train, 1, 1)[3].forecast(week_len), float)
-            except Exception:
-                preds["arima"] = np.full(week_len, np.nan)
-            try:
-                preds["stl"] = np.asarray(stl_naive_fit(train).forecast(week_len), float)
-            except Exception:
-                preds["stl"] = np.full(week_len, np.nan)
-            preds["bench"] = np.full(week_len, float(np.mean(prep(train)[-BENCH_DAYS:])))
+            j = week_end[i]
+            fd_week = ts_fit.index[i:j]
+            week_len = len(fd_week)
+            for key, fn in (("ets", lambda: ets_forecast(train, "SES", fd_week)), ("arima", lambda: sarima_forecast(train, fd_week, 1, 1)),
+                            ("comb", lambda: combined_forecast(train, fd_week)), ("bench", lambda: same_weekday_average(train, fd_week))):
+                try:
+                    preds[key] = np.asarray(fn(), float)
+                except Exception:
+                    preds[key] = np.full(week_len, np.nan)
             for k in names:
                 bt[k].extend(np.maximum(preds[k], 0))
-            bt_dates.extend(ts_fit.index[i:i + week_len])
-            bt_actual.extend(yv[i:i + week_len])
+            bt_dates.extend(ts_fit.index[i:j])
+            bt_actual.extend(yv[i:j])
             bt_week.extend([ts_fit.index[i]] * week_len)
         LOADER.step(0.86, "Building the forecast report card", ceiling=0.9)
         bt_actual = np.array(bt_actual, float)
@@ -2621,13 +2813,13 @@ else:
             x=bt_dates, y=bt_actual, mode="lines+markers", name="What actually happened",
             line=dict(width=3, color=C_INK), marker=dict(size=8, color=AS_GOLD, line=dict(width=1.5, color=C_INK)),
             hovertemplate="%{y:.0f} visits<extra>What actually happened</extra>"), row=1, col=1)
-        styles = {"ets": METHOD_COLORS["ets"], "arima": METHOD_COLORS["arima"], "stl": METHOD_COLORS["stl"], "bench": C_GRAY}
+        styles = {"ets": METHOD_COLORS["ets"], "arima": METHOD_COLORS["arima"], "comb": METHOD_COLORS["comb"], "bench": C_GRAY}
         for k in names:
             fig.add_trace(go.Scatter(
                 x=bt_dates, y=bt[k], mode="lines+markers", name=names[k],
                 line=dict(width=2, color=styles[k], dash="dot" if k == "bench" else "dash"), marker=dict(size=6, color=styles[k]),
                 hovertemplate="about %{y:.0f} visits<extra>" + names[k] + "</extra>"), row=1, col=1)
-        fig.update_xaxes(rangebreaks=[dict(bounds=["fri", "mon"])], tickformat="%b %d", hoverformat="%A, %b %d",
+        fig.update_xaxes(rangebreaks=fc_breaks(bt_dates), tickformat="%b %d", hoverformat="%A, %b %d",
                          row=1, col=1)
         fig.update_yaxes(title_text="Visits per day", rangemode="tozero", row=1, col=1)
         order = ranked + ["bench"]
@@ -2638,10 +2830,10 @@ else:
             row=2, col=1)
         wk_list = sorted(set(bt_week))
         wk_rows = [[f"{w:%b %d}" for w in wk_list], [f"{bt_actual[bt_week == w].sum():.0f}" for w in wk_list]]
-        for k in ["ets", "arima", "stl"]:
+        for k in ["ets", "arima", "comb"]:
             wk_rows.append([f"{bt[k][bt_week == w].sum():.0f}" for w in wk_list])
         fig.add_trace(go.Table(
-            header=table_header(["Week starting", "Actual visits", "Exp. smoothing", "Seasonal ARIMA", "STL + naive"], 12),
+            header=table_header(["Week starting", "Actual visits", "Exp. smoothing", "Seasonal ARIMA", "Combined"], 12),
             cells=table_cells(wk_rows, 12)), row=2, col=2)
         fig.update_layout(title=dict(text="Forecast Report Card: Past Weeks", font=dict(size=22)), height=900,
                           margin=dict(l=70, r=40, t=120, b=40),
@@ -2652,7 +2844,7 @@ else:
             f"For each of the last {n_weeks} full week{'s' if n_weeks != 1 else ''}, every method was given only the data "
             "from before that week, asked to forecast the week, and then compared with what really happened. "
             "'Typical miss' is the average gap between the forecast and reality. 'Simple average' just predicts the "
-            f"average of the previous four weeks every day; a method has to beat it to be worth using. "
+            f"average of that same weekday over the previous four weeks; a method has to beat it to be worth using. "
             f"Of the three forecasting methods, {names[best]} had the smallest daily miss ({card[best]['day']:.1f} visits, "
             f"versus {card['bench']['day']:.1f} for the simple average). "
             + (f"{', '.join(beat)} beat the simple average. " if beat else "None of the methods clearly beat the simple average yet. ")
@@ -2770,8 +2962,12 @@ heat_note = ("These show when visits start, not how many tutors were working. A 
 # ---------- Returning students ----------
 if has_people:
     v = df.dropna(subset=["Student"]).sort_values("Start")
-    v = v[v["Date"] >= start]
-    v["Gap"] = v.groupby(["Student", "Prefix"])["Start"].diff().dt.total_seconds() / 86400
+    # every term in the file counts, but a gap that jumps over a break (3+ weeks with no visits at the whole center)
+    # is not a "time between visits", so those are left out
+    _dates = np.array(sorted(v["Date"].unique()), dtype="datetime64[ns]")
+    _brk = np.where(np.diff(_dates).astype("timedelta64[D]").astype(int) > 21)[0]
+    v["Term"] = np.searchsorted(_dates[_brk + 1], v["Date"].values.astype("datetime64[ns]"), side="right") if len(_brk) else 0
+    v["Gap"] = v.groupby(["Student", "Prefix", "Term"])["Start"].diff().dt.total_seconds() / 86400
     gaps = v.dropna(subset=["Gap"])
     if len(gaps):
         agg = gaps.groupby("Prefix").agg(Mean=("Gap", "mean"), Median=("Gap", "median"),
@@ -2920,7 +3116,7 @@ try{inFrame=window.parent&&window.parent!==window;}catch(e){}
 function mergeIn(o){
   var changed=false;if(!o||typeof o!=='object'){return false;}
   Object.keys(o).forEach(function(n){var e=o[n];if(!e||typeof e.t!=='number'){return;}
-    if(!SCH[n]||e.t>SCH[n].t){SCH[n]={days:Array.isArray(e.days)?e.days:null,t:e.t};changed=true;}});
+    if(!SCH[n]||e.t>SCH[n].t){SCH[n]={days:Array.isArray(e.days)?e.days:null,off:Array.isArray(e.off)?e.off:[],on:Array.isArray(e.on)?e.on:[],t:e.t};changed=true;}});
   return changed;
 }
 mergeIn(D.schedules);
@@ -2935,8 +3131,16 @@ function persist(){
   }
 }
 function schedOf(t){var e=SCH[T[t]];return e&&Array.isArray(e.days)?e.days:null;}
+function excOf(t){var e=SCH[T[t]];return {off:(e&&e.off)||[],on:(e&&e.on)||[]};}
+function counted(t,d){   // is this date a scheduled day? the weekly pattern, minus days called out, plus days added
+  var sch=schedOf(t);if(!sch){return false;}
+  var x=excOf(t),key=DAYS[d];
+  if(x.on.indexOf(key)>=0){return true;}
+  return sch.indexOf(dayWk[d])>=0&&x.off.indexOf(key)<0;
+}
 var dayNum=DAYS.map(function(s){var p=s.split('-');return Date.UTC(+p[0],+p[1]-1,+p[2])/86400000;});
 var dayWk=DAYS.map(function(s){var p=s.split('-');return (new Date(Date.UTC(+p[0],+p[1]-1,+p[2])).getUTCDay()+6)%7;});
+var segOf=[],nSeg=1;(function(){var g=0;for(var i=0;i<nD;i++){if(i>0&&dayNum[i]-dayNum[i-1]>21){g++;}segOf.push(g);}nSeg=g+1;})();   // a new term starts after a break of 3+ weeks with no visits
 var MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function dlabel(i){var p=DAYS[i].split('-');return MON[+p[1]-1]+' '+(+p[2]);}
 var COMPS=[
@@ -2946,42 +3150,62 @@ var COMPS=[
  {k:'other',lab:'Students who went on to another tutor',w:20,fmt:function(v){return Math.round(v*100)+'% saw a different tutor within 2 weeks';}},
  {k:'range',lab:'Range of subjects',w:15,fmt:function(v){return Math.round(v*100)+'% of subject areas covered';}}
 ];
-// ---- index the visit rows ----
-var perT=[],sv={};
-for(var t=0;t<nT;t++){perT.push({});}
-rows.forEach(function(r){
-  var t=r[0],d=r[1],s=r[2],h=r[3],g=r[4],m=r[5];
-  var o=perT[t][d]||(perT[t][d]={n:0,h:0,st:{},g:{},min:m,max:m});
-  o.n++;o.h+=h;if(s>=0){o.st[s]=1;}o.g[g]=(o.g[g]||0)+1;if(m<o.min){o.min=m;}if(m>o.max){o.max=m;}
-  if(s>=0){(sv[s]=sv[s]||{})[d+'|'+t]=1;}
-});
-var svl={};Object.keys(sv).forEach(function(s){svl[s]=Object.keys(sv[s]).map(function(k){var p=k.split('|');return [dayNum[+p[0]],+p[1]];});});
+// ---- index the visit rows (only the visit types that are switched on: drop-in, appointment, or both) ----
+var perT=[],sv={},svl={},TYPEON=[true,true];
+function indexRows(){
+  perT=[];sv={};
+  for(var t=0;t<nT;t++){perT.push({});}
+  rows.forEach(function(r){
+    if(!TYPEON[r[6]]){return;}
+    var t=r[0],d=r[1],s=r[2],h=r[3],g=r[4],m=r[5];
+    var o=perT[t][d]||(perT[t][d]={n:0,h:0,st:{},g:{},min:m,max:m});
+    o.n++;o.h+=h;if(s>=0){o.st[s]=1;}o.g[g]=(o.g[g]||0)+1;if(m<o.min){o.min=m;}if(m>o.max){o.max=m;}
+    if(s>=0){(sv[s]=sv[s]||{})[d+'|'+t]=1;}
+  });
+  svl={};Object.keys(sv).forEach(function(s){svl[s]=Object.keys(sv[s]).map(function(k){var p=k.split('|');return [dayNum[+p[0]],+p[1]];});});
+}
+indexRows();
 var lastNum=dayNum[nD-1],cutoff=lastNum-14,MINV=3,boardOpen=true;
 function span(t){var ds=Object.keys(perT[t]).map(Number);return ds.length?[Math.min.apply(null,ds),Math.max.apply(null,ds)]:null;}
 // a weekday counts as one the tutor works when they have at least MINV visits on it in total, across every week
 function weekdayTotals(t){var w=[0,0,0,0,0,0,0];Object.keys(perT[t]).forEach(function(d){w[dayWk[+d]]+=perT[t][d].n;});return w;}
+// the same totals kept separately for each term, because a tutor's schedule changes from term to term
+function segTotals(t){var a=[];for(var i=0;i<nSeg;i++){a.push([0,0,0,0,0,0,0]);}Object.keys(perT[t]).forEach(function(d){a[segOf[+d]][dayWk[+d]]+=perT[t][d].n;});return a;}
+function lastSegTotals(t){var a=segTotals(t),last=-1;Object.keys(perT[t]).forEach(function(d){if(segOf[+d]>last){last=segOf[+d];}});return last<0?[0,0,0,0,0,0,0]:a[last];}
 // workdays = every day the center was open, on those weekdays, between the tutor's first and last visit (zero-visit days included)
 function workedDays(t){
   var sp=span(t);if(!sp){return [];}
   var sch=schedOf(t);
-  if(sch){var o2=[];for(var d2=sp[0];d2<=sp[1];d2++){if(sch.indexOf(dayWk[d2])>=0){o2.push(d2);}}return o2;}
-  var tot=weekdayTotals(t),out=[];
-  for(var d=sp[0];d<=sp[1];d++){if(tot[dayWk[d]]>=MINV){out.push(d);}}
+  if(sch){var o2=[];for(var d2=sp[0];d2<=sp[1];d2++){if(counted(t,d2)){o2.push(d2);}}return o2;}
+  var tot=segTotals(t),out=[];
+  for(var d=sp[0];d<=sp[1];d++){if(tot[segOf[d]][dayWk[d]]>=MINV){out.push(d);}}
   return out;
 }
-function leftOut(t){if(schedOf(t)){return [];}var tot=weekdayTotals(t),r=[];for(var w=0;w<7;w++){if(tot[w]>0&&tot[w]<MINV){r.push(WNAMES[w]+' ('+tot[w]+')');}}return r;}
+function leftOut(t){if(schedOf(t)){return [];}var tot=lastSegTotals(t),r=[];for(var w=0;w<7;w++){if(tot[w]>0&&tot[w]<MINV){r.push(WNAMES[w]+' ('+tot[w]+')');}}return r;}
 function vis(t,d){return perT[t][d]||null;}
-function inferredWeekdays(t){var tot=weekdayTotals(t),r=[];for(var w=0;w<7;w++){if(tot[w]>=MINV){r.push(w);}}return r;}
-function saveSched(t,days){SCH[T[t]]={days:days,t:Date.now()};persist();rebuild();sel={};workedDays(t).forEach(function(d){sel[d]=1;});render();}
-function toggleWeekday(t,w){
-  var cur2=(schedOf(t)||inferredWeekdays(t)).slice(),i=cur2.indexOf(w);
+function inferredWeekdays(t){var tot=lastSegTotals(t),r=[];for(var w=0;w<7;w++){if(tot[w]>=MINV){r.push(w);}}return r;}
+function saveSched(t,days,off,on){
+  SCH[T[t]]={days:days,off:days===null?[]:(off||[]),on:days===null?[]:(on||[]),t:Date.now()};persist();rebuild();sel={};workedDays(t).forEach(function(d){sel[d]=1;});render();
+}
+function toggleWeekday(t,w){        // a whole weekday: on or off for every week (single-date changes on that weekday are cleared)
+  var cur2=(schedOf(t)||inferredWeekdays(t)).slice(),i=cur2.indexOf(w),x=excOf(t);
   if(i>=0){cur2.splice(i,1);}else{cur2.push(w);}
-  saveSched(t,cur2.sort());
+  var keep=function(list){return list.filter(function(k){var ix=DAYS.indexOf(k);return ix<0||dayWk[ix]!==w;});};
+  saveSched(t,cur2.sort(),keep(x.off),keep(x.on));
+}
+function toggleDate(t,key){         // ONE date only, e.g. someone calls out
+  var ix=DAYS.indexOf(key);if(ix<0){return;}
+  var base=(schedOf(t)||inferredWeekdays(t)).slice(),x=excOf(t),off=x.off.slice(),on=x.on.slice();
+  var isOn=on.indexOf(key)>=0||(base.indexOf(dayWk[ix])>=0&&off.indexOf(key)<0);
+  if(isOn){var k1=on.indexOf(key);if(k1>=0){on.splice(k1,1);}else{off.push(key);}}
+  else{var k2=off.indexOf(key);if(k2>=0){off.splice(k2,1);}else{on.push(key);}}
+  saveSched(t,base.sort(),off,on);
 }
 function calHTML(t){
-  var eff=schedOf(t)||inferredWeekdays(t),sp=span(t),have={};DAYS.forEach(function(x,i){have[x]=1;});
-  var first=new Date(Date.UTC.apply(null,DAYS[0].split('-').map(function(v,i){return i===1?+v-1:+v;})));
-  var last=new Date(Date.UTC.apply(null,DAYS[nD-1].split('-').map(function(v,i){return i===1?+v-1:+v;})));
+  var sch2=schedOf(t)!==null,eff=schedOf(t)||inferredWeekdays(t),sp=span(t),have={};DAYS.forEach(function(x,i){have[x]=1;});
+  var f0=sp?DAYS[sp[0]]:DAYS[0],l0=sp?DAYS[sp[1]]:DAYS[nD-1],wset={};workedDays(t).forEach(function(x){wset[x]=1;});
+  var first=new Date(Date.UTC.apply(null,f0.split('-').map(function(v,i){return i===1?+v-1:+v;})));
+  var last=new Date(Date.UTC.apply(null,l0.split('-').map(function(v,i){return i===1?+v-1:+v;})));
   var h='<div class="months">',y=first.getUTCFullYear(),m=first.getUTCMonth();
   var full=['January','February','March','April','May','June','July','August','September','October','November','December'];
   while(y<last.getUTCFullYear()||(y===last.getUTCFullYear()&&m<=last.getUTCMonth())){
@@ -2992,7 +3216,8 @@ function calHTML(t){
     for(var dd=1;dd<=nd2;dd++){
       var key=y+'-'+(m<9?'0':'')+(m+1)+'-'+(dd<10?'0':'')+dd,wd=(lead+dd-1)%7,real=!!have[key];
       var ix=real?DAYS.indexOf(key):-1,inRange=sp&&ix>=sp[0]&&ix<=sp[1];
-      h+='<span data-cw="'+wd+'" class="'+(eff.indexOf(wd)>=0&&inRange?'on':'')+(real?'':' shut')+'" title="'+(real?'':'Center had no visits this day. ')+'Click to toggle every '+WNAMES[wd]+'">'+dd+'</span>';
+      var isOn=inRange&&(sch2?counted(t,ix):!!wset[ix]);
+      h+='<span '+(real?'data-cd="'+key+'"':'')+' class="'+(isOn?'on':'')+(real?'':' shut')+'" title="'+(real?'Click to mark just this day on or off (e.g. a call-out)':'Center had no visits this day')+'">'+dd+'</span>';
     }
     h+='</div></div>';
     m++;if(m>11){m=0;y++;}
@@ -3059,6 +3284,13 @@ el('tl-minv').addEventListener('change',function(){
   var v=Math.max(1,Math.min(50,Math.round(+this.value||3)));this.value=v;MINV=v;rebuild();
   if(cur!==null){sel={};workedDays(cur).forEach(function(d){sel[d]=1;});}render();
 });
+[0,1].forEach(function(k){el('tl-t'+k).addEventListener('change',function(){
+  TYPEON[k]=this.checked;
+  if(!TYPEON[0]&&!TYPEON[1]){TYPEON[k]=true;this.checked=true;return;}      // at least one kind has to stay on
+  indexRows();rebuild();
+  if(cur!==null){sel={};workedDays(cur).forEach(function(d){sel[d]=1;});}
+  render();
+});});
 el('tl-input').addEventListener('input',function(){
   var t=findTutor(this.value);
   if(t>=0){pickTutor(t);}
@@ -3076,14 +3308,16 @@ function render(){
   var all=workedDays(cur),days=selDays(),h='',lo=leftOut(cur);
   var saved=schedOf(cur)!==null;
   h+='<div class="box"><h3>'+T[cur]+': work schedule<span class="state'+(saved?' saved':'')+'">'+(saved?'Saved'+(SCHWHERE?' on '+SCHWHERE:''):'Guessed from visits')+'</span></h3>';
-  h+='<div class="hint">Click a date (or a weekday letter) to mark that weekday as one this tutor is scheduled. It is saved right away and used the next time you open the dashboard, so a scheduled day with no visits counts as a 0 instead of being ignored. Highlighted days are the ones counted. Dashed days had no visits at the center.</div>'+calHTML(cur);
+  h+='<div class="hint">Click a letter at the top (M, T, W...) to turn a whole weekday on or off for every week. Click a single date to turn just that day on or off, for example when someone calls out. It is saved right away and used the next time you open the dashboard, so a scheduled day with no visits counts as a 0 instead of being ignored. Highlighted days are the ones counted. Dashed days had no visits at the center.</div>'+calHTML(cur);
   h+='<div class="hint">'+(saved?'<button class="small" data-clear="1">Go back to guessing from visits</button>':'Right now the days are guessed from the visits (weekdays with at least '+MINV+' visits in total). Any click above saves a schedule instead.')+'</div></div>';
-  h+='<div class="box"><h3>'+T[cur]+': days counted</h3><div class="hint">'+(saved?'The days come from the saved schedule above.':'A weekday counts as one they work when they have at least '+MINV+' visits on it in total.')+' Every open day of that weekday then counts, including days with no visits. Tap a weekday to include or leave out all of those days, or tap single dates. The score uses the highlighted days.'+(lo.length?' Not counted as workdays: '+lo.join(', ')+' (too few visits).':'')+'</div><div class="wk">';
+  var wtot=weekdayTotals(cur),grand=wtot.reduce(function(a,b2){return a+b2;},0);
+  h+='<div class="box"><h3>'+T[cur]+': visits by weekday</h3><div class="hint"><b>'+grand+' visits in total.</b> Each button shows every visit this tutor has had on all of that weekday ('+(saved?'the days counted for the score come from the saved schedule above':'a weekday counts toward the score when it has at least '+MINV+' visits')+'). Tap a weekday to include or leave out its workdays in the score, or tap single dates below.'+(lo.length?' Not counted as workdays: '+lo.join(', ')+' (too few visits).':'')+'</div><div class="wk">';
   if(!all.length){h+='<div class="warn">No weekday has '+MINV+' or more visits for this tutor.</div>';}
   for(var w=0;w<7;w++){
-    var mine=all.filter(function(d){return dayWk[d]===w;});if(!mine.length){continue;}
+    if(!wtot[w]){continue;}
+    var mine=all.filter(function(d){return dayWk[d]===w;});
     var on=mine.filter(function(d){return sel[d];}).length;
-    h+='<button class="chip'+(on===mine.length?' on':'')+'" data-wk="'+w+'">'+WNAMES[w]+' ('+on+'/'+mine.length+')</button>';
+    h+='<button class="chip'+(mine.length&&on===mine.length?' on':'')+'" data-wk="'+w+'" title="'+(mine.length?on+' of '+mine.length+' workdays counted':'not counted as a workday')+'">'+WNAMES[w]+': '+wtot[w]+' visit'+(wtot[w]===1?'':'s')+'</button>';
   }
   h+='<button class="small" data-all="1">all days</button><button class="small" data-none="1">none</button></div>';
   h+='<div class="scroll"><table><tr><th>Weekday</th><th>Workdays</th><th>With a visit</th><th>Visits per workday</th><th>Usual visit times</th></tr>';
@@ -3094,14 +3328,15 @@ function render(){
     h+='<tr><td>'+WNAMES[w2]+'</td><td>'+md.length+'</td><td>'+withv.length+'</td><td>'+v.toFixed(1)+'</td><td>'+(withv.length?clock(Math.round(median(withv.map(function(d){return vis(cur,d).min;}))))+' to '+clock(Math.round(median(withv.map(function(d){return vis(cur,d).max;})))):'')+'</td></tr>';
   }
   h+='</table></div><div class="chips">';
-  all.forEach(function(d){var o=vis(cur,d);h+='<button class="chip'+(sel[d]?' on':'')+'" data-d="'+d+'" title="'+(o?o.n+' visits':'no visits')+'">'+dlabel(d)+' ('+WNAMES[dayWk[d]]+(o?'':', 0')+')</button>';});
+  h+='<div class="hint" style="width:100%">Dates with a visit:</div>';
+  Object.keys(perT[cur]).map(Number).sort(function(x,y){return x-y;}).forEach(function(d){var o=vis(cur,d);h+='<button class="chip'+(sel[d]?' on':'')+'" data-d="'+d+'" title="'+o.n+' visit'+(o.n===1?'':'s')+'">'+dlabel(d)+' ('+WNAMES[dayWk[d]]+', '+o.n+')</button>';});
   h+='</div></div>';
   var m=measures(cur,days);
   if(!m){h+='<div class="box"><b>Pick at least one day to see a score.</b></div>';box.innerHTML=h;bind();renderBoard();return;}
   var sc=scoreOf(m,cur),s=sc.score;
   var board=eligible.filter(function(t){return t!==cur;}).map(function(t){return scoreOf(full[t],t).score;}).filter(function(x){return x!==null;});
   var rank=s===null?null:board.filter(function(x){return x>s;}).length+1;
-  h+='<div class="box"><h3>'+T[cur]+': tutor score</h3><div class="scorebox"><div class="big">'+(s===null?'n/a':s.toFixed(1))+'<span> / 10</span></div><div>';
+  h+='<div class="box"><h3>'+T[cur]+': tutor score'+(TYPEON[0]&&TYPEON[1]?'':' <span class="state">'+(TYPEON[0]?'drop-in visits only':'appointment visits only')+'</span>')+'</h3><div class="scorebox"><div class="big">'+(s===null?'n/a':s.toFixed(1))+'<span> / 10</span></div><div>';
   if(s!==null){h+='<div><b>'+ordinal(rank)+'</b> of '+(board.length+1)+' tutors</div>';}
   h+='<div>'+m.nd+' workday'+(m.nd===1?'':'s')+' counted ('+m.visitdays+' with a visit) &middot; '+m.totalVisits+' visits &middot; '+m.totalHours.toFixed(1)+' tutoring hours &middot; '+m.students+' different students</div>';
   if(m.nd<MIN_DAYS){h+='<div class="warn">Only '+m.nd+' workday'+(m.nd===1?'':'s')+' counted. A score from fewer than '+MIN_DAYS+' is a rough guide.</div>';}
@@ -3120,7 +3355,7 @@ function render(){
 function renderBoard(){
   var rowsB=eligible.map(function(t){var m=(t===cur&&selDays().length)?measures(t,selDays()):full[t];return {t:t,m:m,s:scoreOf(m,t).score};}).filter(function(x){return x.s!==null;});
   rowsB.sort(function(a,b){return b.s-a.s;});
-  var h='<div class="box"><details'+(boardOpen?' open':'')+'><summary><b>All tutor rankings ('+rowsB.length+')</b></summary><div class="hint">Tutors with at least '+MIN_DAYS+' workdays this term. Tap a row to open that tutor.</div><div class="scroll"><table><tr><th>#</th><th>Tutor</th><th>Score</th><th>Workdays</th><th>Visits</th><th>Hours</th></tr>';
+  var h='<div class="box"><details'+(boardOpen?' open':'')+'><summary><b>All tutor rankings ('+rowsB.length+')</b></summary><div class="hint">Tutors with at least '+MIN_DAYS+' workdays across all terms. Tap a row to open that tutor.</div><div class="scroll"><table><tr><th>#</th><th>Tutor</th><th>Score</th><th>Workdays</th><th>Visits</th><th>Hours</th></tr>';
   rowsB.forEach(function(r,i){h+='<tr class="go'+(r.t===cur?' me':'')+'" data-t="'+r.t+'"><td>'+(i+1)+'</td><td>'+T[r.t]+'</td><td>'+r.s.toFixed(1)+'</td><td>'+r.m.nd+'</td><td>'+r.m.totalVisits+'</td><td>'+r.m.totalHours.toFixed(1)+'</td></tr>';});
   if(!rowsB.length){h+='<tr><td colspan="6">Not enough workdays yet.</td></tr>';}
   else{
@@ -3137,8 +3372,9 @@ function bind(){
   b.querySelectorAll('[data-d]').forEach(function(x){x.addEventListener('click',function(){var d=+x.getAttribute('data-d');if(sel[d]){delete sel[d];}else{sel[d]=1;}render();});});
   b.querySelectorAll('[data-wk]').forEach(function(x){x.addEventListener('click',function(){
     var w=+x.getAttribute('data-wk'),mine=workedDays(cur).filter(function(d){return dayWk[d]===w;});
-    var allOn=mine.every(function(d){return sel[d];});mine.forEach(function(d){if(allOn){delete sel[d];}else{sel[d]=1;}});render();});});
+    if(!mine.length){return;}var allOn=mine.every(function(d){return sel[d];});mine.forEach(function(d){if(allOn){delete sel[d];}else{sel[d]=1;}});render();});});
   b.querySelectorAll('[data-cw]').forEach(function(x){x.addEventListener('click',function(){toggleWeekday(cur,+x.getAttribute('data-cw'));});});
+  b.querySelectorAll('[data-cd]').forEach(function(x){x.addEventListener('click',function(){toggleDate(cur,x.getAttribute('data-cd'));});});
   var cl=b.querySelector('[data-clear]');if(cl){cl.addEventListener('click',function(){saveSched(cur,null);});}
   var a=b.querySelector('[data-all]');if(a){a.addEventListener('click',function(){workedDays(cur).forEach(function(d){sel[d]=1;});render();});}
   var n=b.querySelector('[data-none]');if(n){n.addEventListener('click',function(){sel={};render();});}
@@ -3165,7 +3401,7 @@ def tutor_lookup_html():
     import json as _json
     if not has_consultants:
         return ""
-    tdf = in_term[(in_term["Date"] <= last_complete) & in_term["Consultant"].notna()].copy()
+    tdf = df[(df["Date"] <= last_complete) & df["Consultant"].notna()].copy()      # all time, not just this term
     tdf["Consultant"] = tdf["Consultant"].astype(str).str.strip()
     if tdf["Consultant"].nunique() < 2:
         return ""
@@ -3177,20 +3413,22 @@ def tutor_lookup_html():
     g_idx = {n: i for i, n in enumerate(groups)}
     students = {}
     out_rows = []
-    for name, day, who, hrs, grp, start in zip(tdf["Consultant"], tdf["Date"].dt.strftime("%Y-%m-%d"), tdf["Student"],
-                                               tdf["Hours"], tdf["Group"], tdf["Start"]):
+    for name, day, who, hrs, grp, start, typ in zip(tdf["Consultant"], tdf["Date"].dt.strftime("%Y-%m-%d"), tdf["Student"],
+                                                    tdf["Hours"], tdf["Group"], tdf["Start"], tdf["Type"]):
         sid = -1
         if pd.notna(who):
             sid = students.setdefault(str(who).strip(), len(students))
-        out_rows.append([t_idx[name], d_idx[day], sid, round(float(hrs), 2), g_idx[grp], int(start.hour * 60 + start.minute)])
+        out_rows.append([t_idx[name], d_idx[day], sid, round(float(hrs), 2), g_idx[grp], int(start.hour * 60 + start.minute), 1 if typ == "Appointment" else 0])
     data = _json.dumps(dict(tutors=tutors, days=days, groups=groups, rows=out_rows, schedules=read_schedules(),
                             port=_launch.get("port") or 0, token=_launch.get("token") or ""),
                        separators=(",", ":")).replace("</", "<\\/")
     body = ('<div class="tl"><div class="box"><h3>Tutor score lookup</h3>'
             '<input type="text" id="tl-input" list="tl-names" placeholder="Type a tutor\'s first and last name" autocomplete="off">'
             '<datalist id="tl-names"></datalist><div class="hint" id="tl-msg"></div>'
-            '<div class="hint">Shows when and how often the tutor worked, then a score out of 10 compared with the other tutors this term.</div>'
-            '<div class="hint">A weekday needs at least <input type="number" id="tl-minv" value="3" min="1" max="50" style="width:56px"> visits in total (across all weeks) to count as one this tutor works. Fewer than that is probably a picked-up shift.</div></div>'
+            '<div class="hint"><b>Visits to count:</b> <label style="margin:0 10px"><input type="checkbox" id="tl-t0" checked> Drop-in</label>'
+            '<label><input type="checkbox" id="tl-t1" checked> Appointments</label> &nbsp;(both is the default; turn one off to compare tutors on only the other)</div>'
+            '<div class="hint">Shows when and how often the tutor worked, then a score out of 10 compared with the other tutors across every term in the file.</div>'
+            '<div class="hint">A weekday needs at least <input type="number" id="tl-minv" value="3" min="1" max="50" style="width:56px"> visits in total within a term (across all its weeks) to count as one this tutor works. Fewer than that is probably a picked-up shift.</div></div>'
             '<div id="tl-result"></div><div id="tl-board"></div></div>')
     return TUTOR_LOOKUP_CSS + body + TUTOR_LOOKUP_JS.replace("__DATA__", data)
 
@@ -3199,8 +3437,8 @@ def tutor_lookup_html():
 # BUILD THE DASHBOARD PAGE (one HTML file, tabs across the top)
 # =========================================================
 def stat_cards():
-    total = int(len(d_done))
-    per_day = total / len(complete_days) if len(complete_days) else 0
+    total = int(len(all_done))                       # every visit, drop-in and appointment, on any weekday
+    per_day = len(d_done) / len(complete_days) if len(complete_days) else 0   # (the average is for the regular drop-in days)
     wk = weekly[weekly["Complete"]]["Total"]
     if len(wk) >= 2:
         wk_txt = f"{int(wk.iloc[-1])} vs {int(wk.iloc[-2])}"
@@ -3217,8 +3455,8 @@ def plain_english_takeaways():
     lines = []
     try:
         per_day = d_done.groupby("Date").size().reindex(complete_days, fill_value=0)
-        busy_days = per_day[per_day > 0]                       # closed days (breaks, holidays) should not drag averages down
-        total = int(len(d_done))
+        busy_days = all_done.groupby("Date").size()            # days with visits only: closed days (breaks, holidays) should not drag averages down
+        total = int(len(all_done))
         if total and len(busy_days):
             lines.append(f"So far this term the center has had <b>{total:,} visits</b> over {len(busy_days)} days with visits, "
                          f"about <b>{total / len(busy_days):.0f} a day</b>.")
@@ -3256,7 +3494,7 @@ def plain_english_takeaways():
         if len(groups) >= 2:
             lines.append(f"<b>{groups.index[0]}</b> is the most common subject area ({groups.iloc[0] / groups.sum() * 100:.0f}% of visits), "
                          f"followed by {groups.index[1]} ({groups.iloc[1] / groups.sum() * 100:.0f}%).")
-        types = d_done["Type"].value_counts()
+        types = all_done["Type"].value_counts()
         if len(types) == 2 and total:
             lines.append(f"<b>{types.get('Drop-in', 0) / total * 100:.0f}%</b> of visits are drop-in and "
                          f"{types.get('Appointment', 0) / total * 100:.0f}% are by appointment.")
@@ -3310,6 +3548,37 @@ window.addEventListener('afterprint',function(){var r=document.getElementById('p
 </script>"""
 
 
+PHONE_PRINT_JS = """<script>
+async function printReport(){
+  var btn=document.getElementById('printbtn'),msg=document.getElementById('printmsg');
+  btn.disabled=true;msg.textContent='Preparing the report (a few seconds)...';
+  var order=['weekly','daily','weekday','heat','return','gaps','consult'],html='';
+  try{
+    var title=document.querySelector('.hero h1').textContent,sub=document.querySelector('.hero .sub-title').textContent;
+    html+='<div class="rhead"><h1>'+title+'</h1><div>'+sub+' &middot; printed '+new Date().toLocaleDateString()+'</div></div>';
+    var cards=document.getElementById('statcards');if(cards){html+=cards.outerHTML;}
+    var tk=document.getElementById('takeaways');if(tk){html+=tk.outerHTML;}
+    for(var k=0;k<order.length;k++){
+      var el=document.querySelector('[data-pk="'+order[k]+'"]');if(!el){continue;}
+      if(!el.querySelector('.js-plotly-plot')){            // plots on tabs that were never opened are drawn on demand
+        el.querySelectorAll('script[type="text/lazy"]').forEach(function(sc){sc.type='text/done';try{(0,eval)(sc.textContent);}catch(e){}});
+      }
+      var gd=el.querySelector('.js-plotly-plot');if(!gd){continue;}
+      var h=parseInt(el.getAttribute('data-h'))||450;
+      var url=await Plotly.toImage(gd,{format:'png',width:1000,height:h,scale:1.5});
+      html+='<figure><img src="'+url+'"></figure>';
+      await new Promise(function(r){setTimeout(r,30);});
+    }
+    msg.textContent='';
+    if(window.parent&&window.parent!==window){window.parent.postMessage({slc:'print',html:html},'*');}
+    else{document.getElementById('printreport').innerHTML=html;await new Promise(function(r){setTimeout(r,250);});window.print();}
+  }catch(e){msg.textContent='Could not prepare the report ('+e+').';}
+  btn.disabled=false;
+}
+window.addEventListener('afterprint',function(){var r=document.getElementById('printreport');if(r){r.innerHTML='';}});
+</script>"""
+
+
 def print_button_html():
     if not _launch["port"]:                  # the report needs the helper only for the app's chart; the rest works without it
         js = PRINT_JS.replace("http://127.0.0.1:__PORT__/chart?token=__TOKEN__", "data:,")
@@ -3317,7 +3586,10 @@ def print_button_html():
         js = PRINT_JS.replace("__PORT__", str(_launch["port"])).replace("__TOKEN__", _launch["token"])
     return ('<!--NM--><div class="printbar"><button class="printbtn" id="printbtn" onclick="printReport()">'
             'Print / save as PDF report</button><div id="printmsg" style="font-size:12px;color:#4c4847;margin-top:6px"></div></div>'
-            + js + '<!--/NM-->')
+            + js + '<!--/NM-->'
+            '<!--PH--><div class="printbar"><button class="printbtn" id="printbtn" onclick="printReport()">'
+            'Save as PDF report</button><div id="printmsg" style="font-size:12px;color:#4c4847;margin-top:6px"></div></div>'
+            + PHONE_PRINT_JS + '<!--/PH-->')
 
 
 LOADER.step(0.93, "Putting the dashboard together", ceiling=0.98)

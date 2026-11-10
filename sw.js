@@ -1,5 +1,5 @@
 // Keeps the app (and the Python files) on the phone so it opens offline after the first visit.
-const CACHE = 'slc-data-v5';
+const CACHE = 'slc-data-v8';
 const SHELL = ['./', 'index.html', 'worker.js', 'manifest.webmanifest', 'icon-192.png', 'icon-180.png', 'logo.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
