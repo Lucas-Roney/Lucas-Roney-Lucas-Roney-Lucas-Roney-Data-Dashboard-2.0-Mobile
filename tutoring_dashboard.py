@@ -3253,6 +3253,7 @@ function rebuild(){
 rebuild();
 function weights(){var w={};COMPS.forEach(function(c){w[c.k]=c.w;});return w;}
 function pct(v,list){var less=0,eq=0;list.forEach(function(x){if(x<v-1e-9){less++;}else if(Math.abs(x-v)<=1e-9){eq++;}});return list.length?(less+0.5*eq)/list.length:0.5;}
+function boost(x){return 10*Math.pow(Math.max(0,Math.min(10,x))/10,0.65);}   // gentle upward curve: never changes anyone's rank, 0 stays 0 and 10 stays 10
 function scoreOf(m,self){
   var W=weights(),num=0,den=0,parts=[];
   COMPS.forEach(function(c){
@@ -3262,7 +3263,7 @@ function scoreOf(m,self){
     parts.push({c:c,v:v,p:p});
     if(p!==null&&W[c.k]>0){num+=W[c.k]*p;den+=W[c.k];}
   });
-  return {score:den?10*num/den:null,parts:parts};
+  return {score:den?boost(10*num/den):null,parts:parts};
 }
 // ---- page ----
 var el=function(id){return document.getElementById(id);};
