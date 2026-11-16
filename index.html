@@ -198,7 +198,7 @@ input[type=file]{display:none}
   function readSch() { try { return JSON.parse(localStorage.getItem(SKEY) || '{}'); } catch (e) { return {}; } }
   function mergeSch(a, b) {
     var out = Object.assign({}, a);
-    Object.keys(b || {}).forEach(function (n) { var e = b[n]; if (e && typeof e.t === 'number' && (!out[n] || e.t >= out[n].t)) { out[n] = { days: Array.isArray(e.days) ? e.days : null, t: e.t }; } });
+    Object.keys(b || {}).forEach(function (n) { var e = b[n]; if (e && typeof e.t === 'number' && (!out[n] || e.t >= out[n].t)) { out[n] = { days: Array.isArray(e.days) ? e.days : null, off: Array.isArray(e.off) ? e.off : [], on: Array.isArray(e.on) ? e.on : [], miss: Array.isArray(e.miss) ? e.miss : [], t: e.t }; } });
     return out;
   }
   window.addEventListener('afterprint', function () { $('printreport').innerHTML = ''; });

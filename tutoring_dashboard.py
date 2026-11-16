@@ -282,6 +282,12 @@ from statsmodels.tsa.stattools import kpss
 
 warnings.simplefilter("ignore")        # keep the terminal clean (statsmodels is chatty)
 
+# Which version of the dashboard to build:
+#   "admin"   = everything, including the returning-students tabs and the per-consultant tabs / tutor lookup
+#   "general" = overview, subjects, forecast and busy times only (no tutor-specific information), plus Load new CSV
+EDITION = "admin"
+IS_ADMIN = EDITION == "admin"
+
 OPEN_WEEKDAYS = [0, 1, 2, 3]        # Monday-Thursday (closed Fridays). Monday = 0
 WEEKDAY_NAMES = [["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][i] for i in OPEN_WEEKDAYS]
 TERM_START = "2026-08-24"           # first day of the term (visits before this are left out of trend plots)
@@ -438,14 +444,14 @@ def phone_copy(fig):
     return m, 0
 
 
-def fig_html(fig, pk=None):
-    """pk marks the plots that go into the print/PDF report."""
+def fig_html(fig, pk=None, post=None):
+    """pk marks the plots that go into the print/PDF report. post is extra JavaScript to run once the plot exists."""
     apply_theme(fig)
     h = int(fig.layout.height or 450)
     cfg = {"responsive": True, "displaylogo": False}
-    desk = to_html(fig, full_html=False, include_plotlyjs=False, config=cfg)
+    desk = to_html(fig, full_html=False, include_plotlyjs=False, config=cfg, post_script=post)
     pm, minw = phone_copy(fig)
-    mob = to_html(pm, full_html=False, include_plotlyjs=False, config=dict(cfg, displayModeBar=False, scrollZoom=False))
+    mob = to_html(pm, full_html=False, include_plotlyjs=False, config=dict(cfg, displayModeBar=False, scrollZoom=False), post_script=post)
     mob = mob.replace("<script>", '<script type="text/lazy">')     # drawn when the tab is opened (phones are slow)
     if minw:
         mob = ('<div style="font-size:11px;color:#4c4847;text-align:right;padding:2px 8px">swipe sideways to see all of it &rarr;</div>'
@@ -606,6 +612,8 @@ def write_dashboard(sections, notes, heading, subtitle, csv_path, filename):
     top_panes = "".join(_nm(i, f'<div class="pane" data-group="top" id="{i}">{h}</div>') for i, lbl, h in sections)
     notes_html = "<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>"
     page_tpl = PAGE_TEMPLATE
+    if not IS_ADMIN:
+        page_tpl = page_tpl.replace("<title>SLC Data Dashboard</title>", "<title>SLC Data Dashboard (General)</title>", 1)
     for folder in (getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.abspath(sys.argv[0])), os.getcwd()):
         logo = os.path.join(folder, "appLogo.png") if folder else None
         if logo and os.path.exists(logo):          # embed the logo so the page keeps its tab icon wherever it is saved
@@ -629,7 +637,7 @@ def write_dashboard(sections, notes, heading, subtitle, csv_path, filename):
             html = html.replace('<meta charset="utf-8">', '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">', 1)
             html = html.replace("</style><script>", MOBILE_CSS + "</style><script>" + MOBILE_JS, 1)
             html = html.replace('<div class="tabs">', MOBILE_NOTE + '<div class="tabs">', 1)
-            html = html.replace("<title>SLC Data Dashboard</title>", "<title>SLC Data Dashboard (phone)</title>", 1)
+            html = html.replace("<title>SLC Data Dashboard</title>", "<title>SLC Data Dashboard (phone)</title>", 1).replace("<title>SLC Data Dashboard (General)</title>", "<title>SLC Data Dashboard (General, phone)</title>", 1)
         else:
             html = re.sub(r"<!--PH-->.*?<!--/PH-->", "", html, flags=re.S)
             html = html.replace("</body>", reload_script_html() + "</body>")
@@ -1417,13 +1425,13 @@ def merge_schedules(saved, new):
         if not isinstance(t, (int, float)):
             continue
         exc = {}
-        for key in ("off", "on"):        # single dates taken off (called out) or added on top of the weekly pattern
+        for key in ("off", "on", "miss"):    # dates taken off, added on top of the weekly pattern, or called out (missed)
             vals = e.get(key) or []
-            if not isinstance(vals, list) or len(vals) > 1000 or not all(isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) for v in vals):
+            if not isinstance(vals, list) or len(vals) > 6000 or not all(isinstance(v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) for v in vals):
                 vals = []
             exc[key] = sorted(set(vals))
         if name not in out or t >= out[name].get("t", 0):
-            out[name] = {"days": days, "off": exc["off"], "on": exc["on"], "t": t}
+            out[name] = {"days": days, "off": exc["off"], "on": exc["on"], "miss": exc["miss"], "t": t}
     return out
 
 
@@ -1503,7 +1511,7 @@ def start_launch_server(csv_path):
             if ok:
                 try:
                     size = int(self.headers.get("Content-Length", "0"))
-                    if size > 500_000:
+                    if size > 6_000_000:
                         raise ValueError
                     body = json.dumps(write_schedules(json.loads(self.rfile.read(size).decode("utf-8")))).encode("utf-8")
                 except (ValueError, UnicodeDecodeError):
@@ -1643,7 +1651,7 @@ UPLOADER_CSS = """<style>
 .slcup .lab{flex:1 1 auto;min-width:38ch;white-space:nowrap}
 .slcup .sc{flex:0 0 auto;width:6ch;text-align:right;color:#bdbdbd}
 .slcup .pb{flex:0 0 auto;display:flex;align-items:stretch;height:16px;padding:0 3px;border-left:2px solid #FFCC00;border-right:2px solid #FFCC00}
-.slcup .pb i{display:block;width:9px;height:100%;margin-right:1px;background:#2b2b2b}
+.slcup .pb i{display:block;flex:0 0 8px;width:8px;height:100%;margin-right:2px;background:#4a4a4a}
 .slcup .pb i.f{background:#FFCC00}.slcup .pb i.gl{background:#fff}.slcup .pb i.hd{background:#FFCC00;opacity:.5}
 .slcup .pc{flex:0 0 auto;width:4ch;text-align:right}
 .slcup .g{color:#FFCC00}.slcup .w{color:#fff}.slcup .d{color:#585858}
@@ -1796,7 +1804,7 @@ def new_csv_tab_html():
 
 def run_launcher():
     import urllib.parse as up
-    store = Path.home() / ".tutoring_forecast" / "dashboard"
+    store = Path.home() / ".tutoring_forecast" / ("dashboard" if IS_ADMIN else "dashboard_general")     # separate folders so both editions can run at once
     (store / "uploads").mkdir(parents=True, exist_ok=True)
     (store / "out").mkdir(parents=True, exist_ok=True)
     prog = store / "progress.json"
@@ -1813,7 +1821,7 @@ def run_launcher():
             prog.unlink()
         except OSError:
             pass
-        outs = [str(store / "out" / "tutoring_dashboard.html"), str(store / "out" / "tutoring_effectiveness.html")]
+        outs = [str(store / "out" / ("tutoring_dashboard.html" if IS_ADMIN else "tutoring_dashboard_general.html")), str(store / "out" / "tutoring_effectiveness.html")]
         env = dict(os.environ, TUTORING_DASH_CHILD="1", TUTORING_DASH_LAUNCHER="1", TUTORING_DASH_PORT=str(_launch["port"]),
                    TUTORING_DASH_TOKEN=token, TUTORING_DASH_RUN=str(state["run"] + 1), TUTORING_DASH_OUTDIR=str(store / "out"),
                    TUTORING_DASH_OPENED=json.dumps(outs), TUTORING_DASH_PROGRESS=str(prog),
@@ -1929,7 +1937,7 @@ def run_launcher():
                 return self._send(403, "Not allowed")
             size = int(self.headers.get("Content-Length", "0") or 0)
             if path == "/schedules":
-                if size > 500_000:
+                if size > 6_000_000:
                     return self._send(400, "Too big")
                 try:
                     merged = write_schedules(json.loads(self.rfile.read(size).decode("utf-8")))
@@ -3032,6 +3040,31 @@ else:
     figs["first_appt"] = make_note_fig("First Consultant for Returning Students - Appointment", msg)
     gaps_note = ""
 
+# Re-sorts the consultant-hours bars whenever the legend hides or shows Drop-in / Appointment, so the order always matches
+# what is actually drawn (hiding Appointment ranks everyone by drop-in hours alone). The hidden "Total" hover value follows too.
+RESORT_JS = """
+(function(){
+  var gd=document.getElementById('{plot_id}'),busy=false;
+  function shown(t){return t.visible!==false&&t.visible!=='legendonly';}
+  function resort(){
+    if(busy||!gd.data){return;}
+    var bars=[],tot=-1,i;
+    for(i=0;i<gd.data.length;i++){var t=gd.data[i];if(t.type==='bar'){bars.push(i);}else if(t.name==='Total'){tot=i;}}
+    if(!bars.length){return;}
+    var cats=gd.data[bars[0]].x.slice(),sum=cats.map(function(){return 0;}),any=false;
+    bars.forEach(function(b){if(shown(gd.data[b])){any=true;gd.data[b].y.forEach(function(v,k){sum[k]+=(+v||0);});}});
+    if(!any){return;}
+    var idx=cats.map(function(c,k){return k;}).sort(function(a,b2){return sum[b2]-sum[a]||a-b2;});
+    var order=idx.map(function(k){return cats[k];});
+    busy=true;
+    var jobs=[Plotly.relayout(gd,{'xaxis.categoryorder':'array','xaxis.categoryarray':order})];
+    if(tot>=0){jobs.push(Plotly.restyle(gd,{y:[sum]},[tot]));}
+    Promise.all(jobs).then(function(){busy=false;},function(){busy=false;});
+  }
+  gd.on('plotly_restyle',resort);
+})();
+"""
+
 # ---------- Consultant hours ----------
 consultant_figs = []
 if has_consultants:
@@ -3043,18 +3076,19 @@ if has_consultants:
         piv = piv.loc[piv.sum(axis=1).sort_values(ascending=False).index]
         f = go.Figure()
         for t in ["Drop-in", "Appointment"]:
-            f.add_trace(go.Bar(x=piv.index, y=piv[t], name=t, marker=dict(color=CENTER_COLORS[t]),
+            f.add_trace(go.Bar(x=list(piv.index), y=[float(v) for v in piv[t]], name=t, marker=dict(color=CENTER_COLORS[t]),
                                marker_line=dict(width=2, color="white"),
                                hovertemplate=t + ": %{y:.1f} hours<extra></extra>"))
         f.add_trace(go.Scatter(                       # invisible: only adds the sum to the shared hover box
-            x=piv.index, y=piv.sum(axis=1), mode="markers", name="Total", showlegend=False,
+            x=list(piv.index), y=[float(v) for v in piv.sum(axis=1)], mode="markers", name="Total", showlegend=False,
             marker=dict(size=1, opacity=0), hovertemplate="Total: %{y:.1f} hours<extra></extra>"))
         if crla:
             f.add_trace(go.Scatter(x=[0, 1], y=[CRLA_HOURS, CRLA_HOURS], xaxis="x2", mode="lines", name="CRLA hour requirement",
                                    line=dict(color=AS_DGRAY, dash="dot", width=2), hoverinfo="skip", visible="legendonly"))
             f.update_layout(xaxis2=dict(overlaying="x", range=[0, 1], visible=False, fixedrange=True))
         f.update_layout(barmode="stack", hovermode="x unified", height=560, title=dict(text=title), yaxis_title="Total hours",
-                        legend=dict(orientation="h", y=1.08, x=0), margin=dict(l=60, r=40, t=90, b=140))
+                        legend=dict(orientation="h", y=1.08, x=0), margin=dict(l=60, r=40, t=90, b=140),
+                        xaxis=dict(categoryorder="array", categoryarray=list(piv.index)))
         return f
 
     consultant_figs.append(("All", hours_fig(cdf, "All Consultant Hours", crla=True)))
@@ -3082,7 +3116,13 @@ TUTOR_LOOKUP_CSS = """<style>
 .tl th{text-align:left;font-weight:600;border-bottom:2px solid #FFCC00;padding:5px 8px;white-space:nowrap}
 .tl td{padding:5px 8px;border-bottom:1px solid #eee;white-space:nowrap}
 .tl tr.me td{background:#fff4c2;font-weight:600}
+.tl tr.avg td{background:#fffbe3;font-style:italic;border-top:2px solid #FFCC00;border-bottom:2px solid #FFCC00}
 .tl tr.go{cursor:pointer}.tl tr.go:hover td{background:#faf6e3}
+.tl .dist svg{width:100%;height:auto;display:block}
+.tl .dmain{max-width:480px}
+.tl .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,230px));gap:8px 12px;margin-top:10px}
+.tl .dgrid .dc{border:1px solid #e4e4e4;padding:6px 8px;background:#fff}
+.tl .dgrid .dt{font-size:12px;font-weight:600;margin:0 0 2px}
 .tl .scorebox{display:flex;flex-wrap:wrap;align-items:center;gap:18px 28px}
 .tl .big{font-family:'Archivo Black','Arial Black',sans-serif;font-size:54px;line-height:1}.tl .big span{font-size:22px;color:#4c4847}
 .tl .bar{background:#eee;border-radius:4px;height:12px;overflow:hidden;min-width:120px}.tl .bar i{display:block;height:100%;background:#FFCC00}
@@ -3100,6 +3140,7 @@ TUTOR_LOOKUP_CSS = """<style>
 .tl .cal span.shut{background:#fff;border:1px dashed #ddd;color:#bbb}
 .tl .cal span.on{background:#FFCC00;color:#010101;font-weight:600}
 .tl .cal span.on.shut{background:#fff4c2;border:1px dashed #FFCC00;color:#8a5a00}
+.tl .cal span.miss{background:#c6602a;color:#fff;font-weight:600}
 .tl .cal span.none{visibility:hidden}
 .tl .state{display:inline-block;font-size:12px;border-radius:10px;padding:2px 10px;margin-left:8px;background:#eee;font-weight:400}
 .tl .state.saved{background:#d9f2d9}
@@ -3116,7 +3157,7 @@ try{inFrame=window.parent&&window.parent!==window;}catch(e){}
 function mergeIn(o){
   var changed=false;if(!o||typeof o!=='object'){return false;}
   Object.keys(o).forEach(function(n){var e=o[n];if(!e||typeof e.t!=='number'){return;}
-    if(!SCH[n]||e.t>SCH[n].t){SCH[n]={days:Array.isArray(e.days)?e.days:null,off:Array.isArray(e.off)?e.off:[],on:Array.isArray(e.on)?e.on:[],t:e.t};changed=true;}});
+    if(!SCH[n]||e.t>SCH[n].t){SCH[n]={days:Array.isArray(e.days)?e.days:null,off:Array.isArray(e.off)?e.off:[],on:Array.isArray(e.on)?e.on:[],miss:Array.isArray(e.miss)?e.miss:[],t:e.t};changed=true;}});
   return changed;
 }
 mergeIn(D.schedules);
@@ -3131,10 +3172,11 @@ function persist(){
   }
 }
 function schedOf(t){var e=SCH[T[t]];return e&&Array.isArray(e.days)?e.days:null;}
-function excOf(t){var e=SCH[T[t]];return {off:(e&&e.off)||[],on:(e&&e.on)||[]};}
+function excOf(t){var e=SCH[T[t]];return {off:(e&&e.off)||[],on:(e&&e.on)||[],miss:(e&&e.miss)||[]};}
 function counted(t,d){   // is this date a scheduled day? the weekly pattern, minus days called out, plus days added
   var sch=schedOf(t);if(!sch){return false;}
   var x=excOf(t),key=DAYS[d];
+  if(x.miss.indexOf(key)>=0){return false;}          // called out: not a day worked
   if(x.on.indexOf(key)>=0){return true;}
   return sch.indexOf(dayWk[d])>=0&&x.off.indexOf(key)<0;
 }
@@ -3148,7 +3190,8 @@ var COMPS=[
  {k:'visitdays',lab:'Days with at least one visit',w:20,fmt:function(v,m){return v+' of '+m.nd+' workdays had a visit';}},
  {k:'repeat',lab:'Students who came back to them',w:20,fmt:function(v){return Math.round(v*100)+'% saw this tutor on 2+ days';}},
  {k:'other',lab:'Students who went on to another tutor',w:20,fmt:function(v){return Math.round(v*100)+'% saw a different tutor within 2 weeks';}},
- {k:'range',lab:'Range of subjects',w:15,fmt:function(v){return Math.round(v*100)+'% of subject areas covered';}}
+ {k:'range',lab:'Range of subjects',w:15,fmt:function(v){return Math.round(v*100)+'% of subject areas covered';}},
+ {k:'callout',lab:'Days called out (fewer is better)',w:10,lower:true,fmt:function(v,m){return m.missN+' day'+(m.missN===1?'':'s')+' called out ('+Math.round(v*100)+'% of the '+m.nd+' days worked)';}}
 ];
 // ---- index the visit rows (only the visit types that are switched on: drop-in, appointment, or both) ----
 var perT=[],sv={},svl={},TYPEON=[true,true];
@@ -3166,7 +3209,12 @@ function indexRows(){
 }
 indexRows();
 var lastNum=dayNum[nD-1],cutoff=lastNum-14,MINV=3,boardOpen=true;
-function span(t){var ds=Object.keys(perT[t]).map(Number);return ds.length?[Math.min.apply(null,ds),Math.max.apply(null,ds)]:null;}
+var dayIx={};DAYS.forEach(function(k,i){dayIx[k]=i;});
+function span(t){
+  var ds=Object.keys(perT[t]).map(Number);
+  var e=SCH[T[t]];if(e&&Array.isArray(e.on)){e.on.forEach(function(k){if(dayIx[k]!==undefined){ds.push(dayIx[k]);}});}   // worked days from an imported work-visit file count even when the tutor had no visits that day
+  return ds.length?[Math.min.apply(null,ds),Math.max.apply(null,ds)]:null;
+}
 // a weekday counts as one the tutor works when they have at least MINV visits on it in total, across every week
 function weekdayTotals(t){var w=[0,0,0,0,0,0,0];Object.keys(perT[t]).forEach(function(d){w[dayWk[+d]]+=perT[t][d].n;});return w;}
 // the same totals kept separately for each term, because a tutor's schedule changes from term to term
@@ -3184,26 +3232,30 @@ function workedDays(t){
 function leftOut(t){if(schedOf(t)){return [];}var tot=lastSegTotals(t),r=[];for(var w=0;w<7;w++){if(tot[w]>0&&tot[w]<MINV){r.push(WNAMES[w]+' ('+tot[w]+')');}}return r;}
 function vis(t,d){return perT[t][d]||null;}
 function inferredWeekdays(t){var tot=lastSegTotals(t),r=[];for(var w=0;w<7;w++){if(tot[w]>=MINV){r.push(w);}}return r;}
-function saveSched(t,days,off,on){
-  SCH[T[t]]={days:days,off:days===null?[]:(off||[]),on:days===null?[]:(on||[]),t:Date.now()};persist();rebuild();sel={};workedDays(t).forEach(function(d){sel[d]=1;});render();
+function saveSched(t,days,off,on,miss){
+  SCH[T[t]]={days:days,off:days===null?[]:(off||[]),on:days===null?[]:(on||[]),miss:days===null?[]:(miss||[]),t:Date.now()};persist();rebuild();sel={};workedDays(t).forEach(function(d){sel[d]=1;});render();
 }
 function toggleWeekday(t,w){        // a whole weekday: on or off for every week (single-date changes on that weekday are cleared)
   var cur2=(schedOf(t)||inferredWeekdays(t)).slice(),i=cur2.indexOf(w),x=excOf(t);
   if(i>=0){cur2.splice(i,1);}else{cur2.push(w);}
   var keep=function(list){return list.filter(function(k){var ix=DAYS.indexOf(k);return ix<0||dayWk[ix]!==w;});};
-  saveSched(t,cur2.sort(),keep(x.off),keep(x.on));
+  saveSched(t,cur2.sort(),keep(x.off),keep(x.on),keep(x.miss));
 }
-function toggleDate(t,key){         // ONE date only, e.g. someone calls out
+function toggleDate(t,key){         // ONE date: worked -> not worked -> called out (missed) -> worked
   var ix=DAYS.indexOf(key);if(ix<0){return;}
-  var base=(schedOf(t)||inferredWeekdays(t)).slice(),x=excOf(t),off=x.off.slice(),on=x.on.slice();
-  var isOn=on.indexOf(key)>=0||(base.indexOf(dayWk[ix])>=0&&off.indexOf(key)<0);
-  if(isOn){var k1=on.indexOf(key);if(k1>=0){on.splice(k1,1);}else{off.push(key);}}
-  else{var k2=off.indexOf(key);if(k2>=0){off.splice(k2,1);}else{on.push(key);}}
-  saveSched(t,base.sort(),off,on);
+  var base=(schedOf(t)||inferredWeekdays(t)).slice(),x=excOf(t),off=x.off.slice(),on=x.on.slice(),miss=x.miss.slice();
+  var baseW=base.indexOf(dayWk[ix])>=0,sp=span(t),inSpan=sp&&ix>=sp[0]&&ix<=sp[1];
+  var state=miss.indexOf(key)>=0?'M':((on.indexOf(key)>=0||(baseW&&off.indexOf(key)<0))&&inSpan?'W':'N');
+  var next=state==='W'?'N':state==='N'?'M':(inSpan?'W':'N');
+  [off,on,miss].forEach(function(L){var i=L.indexOf(key);if(i>=0){L.splice(i,1);}});
+  if(next==='W'&&!baseW){on.push(key);}
+  if(next==='N'&&baseW){off.push(key);}
+  if(next==='M'){miss.push(key);}
+  saveSched(t,base.sort(),off,on,miss);
 }
 function calHTML(t){
   var sch2=schedOf(t)!==null,eff=schedOf(t)||inferredWeekdays(t),sp=span(t),have={};DAYS.forEach(function(x,i){have[x]=1;});
-  var f0=sp?DAYS[sp[0]]:DAYS[0],l0=sp?DAYS[sp[1]]:DAYS[nD-1],wset={};workedDays(t).forEach(function(x){wset[x]=1;});
+  var f0=sp?DAYS[sp[0]]:DAYS[0],l0=sp?DAYS[sp[1]]:DAYS[nD-1],wset={},missSet={};workedDays(t).forEach(function(x){wset[x]=1;});excOf(t).miss.forEach(function(k){missSet[k]=1;});
   var first=new Date(Date.UTC.apply(null,f0.split('-').map(function(v,i){return i===1?+v-1:+v;})));
   var last=new Date(Date.UTC.apply(null,l0.split('-').map(function(v,i){return i===1?+v-1:+v;})));
   var h='<div class="months">',y=first.getUTCFullYear(),m=first.getUTCMonth();
@@ -3216,8 +3268,8 @@ function calHTML(t){
     for(var dd=1;dd<=nd2;dd++){
       var key=y+'-'+(m<9?'0':'')+(m+1)+'-'+(dd<10?'0':'')+dd,wd=(lead+dd-1)%7,real=!!have[key];
       var ix=real?DAYS.indexOf(key):-1,inRange=sp&&ix>=sp[0]&&ix<=sp[1];
-      var isOn=inRange&&(sch2?counted(t,ix):!!wset[ix]);
-      h+='<span '+(real?'data-cd="'+key+'"':'')+' class="'+(isOn?'on':'')+(real?'':' shut')+'" title="'+(real?'Click to mark just this day on or off (e.g. a call-out)':'Center had no visits this day')+'">'+dd+'</span>';
+      var isOn=inRange&&(sch2?counted(t,ix):!!wset[ix]),isMiss=real&&missSet[key];
+      h+='<span '+(real?'data-cd="'+key+'"':'')+' class="'+(isMiss?'miss':isOn?'on':'')+(real?'':' shut')+'" title="'+(real?(isMiss?'Called out. Click to count it as worked again':isOn?'Worked. Click to mark as not worked':'Not worked. Click to mark as called out'):'Center had no visits this day')+'">'+dd+'</span>';
     }
     h+='</div></div>';
     m++;if(m>11){m=0;y++;}
@@ -3243,6 +3295,8 @@ function measures(t,days){
   m.other=sess>=5?back/sess:null;
   m.range=Object.keys(gc).filter(function(g){return gc[g]>=3;}).length/Math.max(G.length,1);
   m.nd=nd;m.totalVisits=tv;m.totalHours=hrs;m.students=ns;
+  var missed=excOf(t).miss.filter(function(k){return DAYS.indexOf(k)>=0;}).length;
+  m.missN=missed;m.callout=schedOf(t)!==null?missed/nd:null;       // only once a schedule is saved, so tutors nobody has tracked are not scored on it
   return m;
 }
 var eligible=[],full={};
@@ -3260,10 +3314,65 @@ function scoreOf(m,self){
     var v=m[c.k];if(v===null||v===undefined){parts.push({c:c,v:null,p:null});return;}
     var peers=[];eligible.forEach(function(t){if(t!==self&&full[t]&&full[t][c.k]!==null){peers.push(full[t][c.k]);}});
     var p=peers.length>=3?pct(v,peers):null;
+    if(p!==null&&c.lower){p=1-p;}                  // for call-outs, fewer is better
     parts.push({c:c,v:v,p:p});
     if(p!==null&&W[c.k]>0){num+=W[c.k]*p;den+=W[c.k];}
   });
   return {score:den?boost(10*num/den):null,parts:parts};
+}
+// ---- where a tutor lands on the real spread of all tutors' scores (a smoothed histogram, not a made-up bell curve) ----
+function kdeCurve(vals,lo,hi,n){
+  var m=vals.length,mean=vals.reduce(function(a,b){return a+b;},0)/m;
+  var sd=Math.sqrt(vals.reduce(function(a,b){return a+(b-mean)*(b-mean);},0)/m);
+  var h=1.06*sd*Math.pow(m,-0.2);if(!(h>1e-9)){h=(hi-lo)/12||0.1;}
+  var pts=[];
+  for(var i=0;i<=n;i++){var x=lo+(hi-lo)*i/n,d=0;for(var j=0;j<m;j++){var z=(x-vals[j])/h;d+=Math.exp(-0.5*z*z);}pts.push([x,d/(m*h*2.5066)]);}
+  return {pts:pts,h:h,dens:function(x){var d=0;for(var j=0;j<m;j++){var z=(x-vals[j])/h;d+=Math.exp(-0.5*z*z);}return d/(m*h*2.5066);}};
+}
+// vals: everyone's values (higher = better here), mark: this tutor's value, fmt: tick text, W/H: drawing size
+function distSVG(vals,mark,fmt,W,H,bounds,big){
+  var mn=Math.min.apply(null,vals.concat([mark])),mx=Math.max.apply(null,vals.concat([mark]));
+  var pad=(mx-mn)*0.12||0.5,lo=mn-pad,hi=mx+pad;
+  if(mark<=mn){lo=mark;}                 // lowest of all: the line sits at the far left
+  if(mark>=mx){hi=mark;}                 // highest of all: the line sits at the far right
+  if(bounds){lo=Math.max(bounds[0],lo);hi=Math.min(bounds[1],hi);}
+  var c=kdeCurve(vals,lo,hi,90),top=0;c.pts.forEach(function(p){if(p[1]>top){top=p[1];}});top=top||1;
+  var L=big?30:14,R=big?30:14,T=big?24:20,B=big?30:22,pw=W-L-R,ph=H-T-B;
+  var X=function(x){return L+pw*(x-lo)/(hi-lo);},Y=function(d){return T+ph*(1-d/top*0.95);},base=T+ph;
+  var line='',area='';
+  c.pts.forEach(function(p,i){line+=(i?' L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1);});
+  var mk=Math.max(lo,Math.min(hi,mark)),sh='M'+X(lo).toFixed(1)+' '+base;
+  c.pts.forEach(function(p){if(p[0]<=mk){sh+=' L'+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1);}});
+  sh+=' L'+X(mk).toFixed(1)+' '+Y(c.dens(mk)).toFixed(1)+' L'+X(mk).toFixed(1)+' '+base+' Z';
+  var fs=big?12:10,out='<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Distribution">';
+  out+='<path d="'+sh+'" fill="#FFCC00" fill-opacity="0.65"/>';
+  out+='<path d="'+line+'" fill="none" stroke="#4c4847" stroke-width="'+(big?2:1.5)+'"/>';
+  out+='<line x1="'+L+'" y1="'+base+'" x2="'+(W-R)+'" y2="'+base+'" stroke="#999" stroke-width="1"/>';
+  out+='<line x1="'+X(mk).toFixed(1)+'" y1="'+(T-4)+'" x2="'+X(mk).toFixed(1)+'" y2="'+base+'" stroke="#010101" stroke-width="'+(big?2.5:2)+'"/>';
+  var lx=X(mk),anchor=lx>W-R-40?'end':(lx<L+40?'start':'middle');
+  out+='<text x="'+lx.toFixed(1)+'" y="'+(T-8)+'" font-size="'+(fs+1)+'" font-weight="700" text-anchor="'+anchor+'" fill="#010101">'+fmt(mark)+'</text>';
+  out+='<text x="'+L+'" y="'+(H-6)+'" font-size="'+fs+'" fill="#4c4847">'+fmt(lo)+'</text>';
+  out+='<text x="'+(W-R)+'" y="'+(H-6)+'" font-size="'+fs+'" text-anchor="end" fill="#4c4847">'+fmt(hi)+'</text>';
+  return out+'</svg>';
+}
+function distHTML(sc,s,board,m){
+  var h='<div class="box dist"><h3>Where they land among all tutors</h3>';
+  if(s===null||board.length<4){return h+'<div class="hint">Needs at least 5 tutors with enough workdays to draw this.</div></div>';}
+  var all=board.concat([s]),beat=board.filter(function(x){return x<s;}).length/board.length;
+  h+='<div class="hint">The curve is the real spread of every tutor\'s score, smoothed. The black line is this tutor and the gold area is everyone they score higher than (about '+Math.round(beat*100)+'% of tutors). Further right is better.</div>';
+  h+='<div class="dmain">'+distSVG(all,s,function(v){return v.toFixed(1);},560,150,[0,10],true)+'</div>';
+  var cards='';
+  sc.parts.forEach(function(p){
+    if(p.v===null||p.v===undefined){return;}
+    var vals=[];eligible.forEach(function(t){var x=full[t]&&full[t][p.c.k];if(x!==null&&x!==undefined){vals.push(p.c.lower?-x:x);}});
+    var mine=p.c.lower?-p.v:p.v;
+    if(vals.length<5||Math.max.apply(null,vals)-Math.min.apply(null,vals)<1e-9){return;}      // nothing to compare when everyone is the same
+    var frac=vals.concat([mine]).every(function(x){return Math.abs(x)<=1.0001;});
+    var fmt=function(v){v=p.c.lower?-v:v;return frac?Math.round(v*100)+'%':(Math.abs(v)>=10?v.toFixed(0):v.toFixed(1));};
+    cards+='<div class="dc"><div class="dt">'+p.c.lab+(p.p===null?'':' <span style="font-weight:400;color:#4c4847">&middot; better than '+Math.round(p.p*100)+'%</span>')+'</div>'+distSVG(vals,mine,fmt,260,100,frac?(p.c.lower?[-1,0]:[0,1]):null,false)+'</div>';
+  });
+  if(cards){h+='<div class="dgrid">'+cards+'</div>';}
+  return h+'</div>';
 }
 // ---- page ----
 var el=function(id){return document.getElementById(id);};
@@ -3281,6 +3390,64 @@ function pickTutor(t){
   cur=t;sel={};workedDays(t).forEach(function(d){sel[d]=1;});
   el('tl-input').value=T[t];render();
 }
+function csvRows(text){
+  var rows=[],row=[],f='',q=false,i,c;
+  for(i=0;i<text.length;i++){c=text.charAt(i);
+    if(q){if(c==='"'){if(text.charAt(i+1)==='"'){f+='"';i++;}else{q=false;}}else{f+=c;}}
+    else if(c==='"'){q=true;}
+    else if(c===','){row.push(f);f='';}
+    else if(c==='\n'||c==='\r'){if(c==='\r'&&text.charAt(i+1)==='\n'){i++;}row.push(f);f='';if(row.length>1||row[0]!==''){rows.push(row);}row=[];}
+    else{f+=c;}
+  }
+  if(f!==''||row.length){row.push(f);rows.push(row);}
+  return rows;
+}
+function p2(n){n=String(n);return n.length<2?'0'+n:n;}
+function dateKey(sv){
+  var m=/(\d{4})-(\d{1,2})-(\d{1,2})/.exec(sv);if(m){return m[1]+'-'+p2(m[2])+'-'+p2(m[3]);}
+  m=/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(sv);if(m){var y=+m[3];if(y<100){y+=2000;}return y+'-'+p2(m[1])+'-'+p2(m[2]);}
+  return null;
+}
+function nameKey(sv){return String(sv||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
+function importWork(text){
+  var rows=csvRows(text),hi=-1,ci=-1,di=-1,r,c;
+  for(r=0;r<Math.min(rows.length,15)&&hi<0;r++){
+    var d2=-1,c2=-1;
+    rows[r].forEach(function(h,k){var l=h.toLowerCase();if(l.indexOf('consultant')>=0&&c2<0){c2=k;}if(l.indexOf('date')>=0&&(d2<0||l.indexOf('start')>=0)){d2=k;}});
+    if(d2>=0&&c2>=0){hi=r;di=d2;ci=c2;}
+  }
+  if(hi<0){return 'Could not find the "Date, Time Started" and "Consultant" columns in that file.';}
+  var byName={};for(var t=0;t<nT;t++){byName[nameKey(T[t])]=t;}
+  var got={},unknown={},rowsUsed=0,badDates=0;
+  for(r=hi+1;r<rows.length;r++){
+    var row=rows[r],nm=row[ci];if(!nm){continue;}
+    var key=dateKey(row[di]||'');if(!key){badDates++;continue;}
+    var idx=byName[nameKey(nm)];
+    if(idx===undefined&&nm.indexOf(',')>0){var pr=nm.split(',');idx=byName[nameKey(pr.slice(1).join(' ')+' '+pr[0])];}   // "Last, First"
+    if(idx===undefined){unknown[nm]=1;continue;}
+    if(dayIx[key]===undefined){continue;}                // a day the center had no visits at all is not one of the days the dashboard knows
+    (got[idx]=got[idx]||{})[key]=1;rowsUsed++;
+  }
+  var n=0,total=0;
+  Object.keys(got).forEach(function(k){
+    var t2=+k,keys=Object.keys(got[t2]).sort(),old=excOf(t2).miss.filter(function(x){return !got[t2][x];});
+    SCH[T[t2]]={days:[],off:[],on:keys,miss:old,t:Date.now()};n++;total+=keys.length;
+  });
+  if(!n){return 'No tutor in that file matched a tutor in this dashboard.';}
+  persist();rebuild();
+  if(cur!==null){sel={};workedDays(cur).forEach(function(d){sel[d]=1;});}
+  render();
+  var un=Object.keys(unknown);
+  return 'Filled in '+total.toLocaleString()+' worked days for '+n+' tutors.'+(un.length?' Not matched (no visits in this dashboard): '+un.slice(0,8).join(', ')+(un.length>8?' and '+(un.length-8)+' more':'')+'.':'')+(badDates?' '+badDates+' rows had a date that could not be read.':'');
+}
+el('tl-work').addEventListener('change',function(){
+  var f=this.files&&this.files[0],box=el('tl-workmsg'),inp=this;if(!f){return;}
+  box.textContent='Reading '+f.name+'...';
+  var rd=new FileReader();
+  rd.onload=function(){var msg;try{msg=importWork(String(rd.result));}catch(e){msg='Could not read that file ('+e+').';}box.textContent=msg;inp.value='';};
+  rd.onerror=function(){box.textContent='Could not open that file.';};
+  rd.readAsText(f);
+});
 el('tl-minv').addEventListener('change',function(){
   var v=Math.max(1,Math.min(50,Math.round(+this.value||3)));this.value=v;MINV=v;rebuild();
   if(cur!==null){sel={};workedDays(cur).forEach(function(d){sel[d]=1;});}render();
@@ -3309,7 +3476,7 @@ function render(){
   var all=workedDays(cur),days=selDays(),h='',lo=leftOut(cur);
   var saved=schedOf(cur)!==null;
   h+='<div class="box"><h3>'+T[cur]+': work schedule<span class="state'+(saved?' saved':'')+'">'+(saved?'Saved'+(SCHWHERE?' on '+SCHWHERE:''):'Guessed from visits')+'</span></h3>';
-  h+='<div class="hint">Click a letter at the top (M, T, W...) to turn a whole weekday on or off for every week. Click a single date to turn just that day on or off, for example when someone calls out. It is saved right away and used the next time you open the dashboard, so a scheduled day with no visits counts as a 0 instead of being ignored. Highlighted days are the ones counted. Dashed days had no visits at the center.</div>'+calHTML(cur);
+  h+='<div class="hint">Click a letter at the top (M, T, W...) to turn a whole weekday on or off for every week. Click a single date to cycle it: <b>worked</b> (gold), then <b>not worked</b> (gray, left out completely), then <b>called out</b> (red, counts as a missed day in the score), then back to worked. It is saved right away and used the next time you open the dashboard, so a scheduled day with no visits counts as a 0 instead of being ignored. Dashed days had no visits at the center. The call-out score only counts once a schedule is saved.</div>'+calHTML(cur);
   h+='<div class="hint">'+(saved?'<button class="small" data-clear="1">Go back to guessing from visits</button>':'Right now the days are guessed from the visits (weekdays with at least '+MINV+' visits in total). Any click above saves a schedule instead.')+'</div></div>';
   var wtot=weekdayTotals(cur),grand=wtot.reduce(function(a,b2){return a+b2;},0);
   h+='<div class="box"><h3>'+T[cur]+': visits by weekday</h3><div class="hint"><b>'+grand+' visits in total.</b> Each button shows every visit this tutor has had on all of that weekday ('+(saved?'the days counted for the score come from the saved schedule above':'a weekday counts toward the score when it has at least '+MINV+' visits')+'). Tap a weekday to include or leave out its workdays in the score, or tap single dates below.'+(lo.length?' Not counted as workdays: '+lo.join(', ')+' (too few visits).':'')+'</div><div class="wk">';
@@ -3345,10 +3512,11 @@ function render(){
   h+='</div></div>';
   sc.parts.forEach(function(p){
     h+='<div class="comp"><div class="lab">'+p.c.lab+'</div><div>';
-    h+=p.p===null?'<div class="hint">not enough data</div>':'<div class="bar"><i style="width:'+Math.round(p.p*100)+'%"></i></div>';
+    h+=p.p===null?'<div class="hint">'+(p.c.k==='callout'?(p.v===null?'no schedule saved yet. Click days on the calendar to track call-outs':'needs 3 or more other tutors with a saved schedule'):'not enough data')+'</div>':'<div class="bar"><i style="width:'+Math.round(p.p*100)+'%"></i></div>';
     h+='</div><div class="val">'+(p.v===null?'':p.c.fmt(p.v,m))+(p.p===null?'':' &middot; better than '+Math.round(p.p*100)+'% of tutors')+'</div></div>';
   });
-  h+='<details><summary>What counts, and how much</summary><div class="hint">Each measure is turned into where the tutor sits among the other tutors (better than half of them = 5 out of 10). The five are averaged using the weights below. Change them to see how the score moves.</div>';
+  h+=distHTML(sc,s,board,m);
+  h+='<details><summary>What counts, and how much</summary><div class="hint">Each measure is turned into where the tutor sits among the other tutors (better than half of them = 5 out of 10). The measures are averaged using the weights below. Change them to see how the score moves.</div>';
   COMPS.forEach(function(c){h+='<div class="wrow"><div>'+c.lab+'</div><input type="range" min="0" max="50" step="5" value="'+c.w+'" data-w="'+c.k+'"><div>'+c.w+'</div></div>';});
   h+='<div class="hint" style="margin-top:8px"><b>What this does not measure:</b> how well anyone teaches. Everything comes from sign-ins, so a tutor on slow hours or in harder subjects can look lower. Treat the score as one input next to conversations and observation.</div></details></div>';
   box.innerHTML=h;bind();renderBoard();
@@ -3357,12 +3525,19 @@ function renderBoard(){
   var rowsB=eligible.map(function(t){var m=(t===cur&&selDays().length)?measures(t,selDays()):full[t];return {t:t,m:m,s:scoreOf(m,t).score};}).filter(function(x){return x.s!==null;});
   rowsB.sort(function(a,b){return b.s-a.s;});
   var h='<div class="box"><details'+(boardOpen?' open':'')+'><summary><b>All tutor rankings ('+rowsB.length+')</b></summary><div class="hint">Tutors with at least '+MIN_DAYS+' workdays across all terms. Tap a row to open that tutor.</div><div class="scroll"><table><tr><th>#</th><th>Tutor</th><th>Score</th><th>Workdays</th><th>Visits</th><th>Hours</th></tr>';
-  rowsB.forEach(function(r,i){h+='<tr class="go'+(r.t===cur?' me':'')+'" data-t="'+r.t+'"><td>'+(i+1)+'</td><td>'+T[r.t]+'</td><td>'+r.s.toFixed(1)+'</td><td>'+r.m.nd+'</td><td>'+r.m.totalVisits+'</td><td>'+r.m.totalHours.toFixed(1)+'</td></tr>';});
-  if(!rowsB.length){h+='<tr><td colspan="6">Not enough workdays yet.</td></tr>';}
-  else{
+  var avgRow=null;
+  if(rowsB.length){
     var avg=function(f){return rowsB.reduce(function(a,r){return a+f(r);},0)/rowsB.length;};
-    h+='<tr><td></td><td><i>Average tutor</i></td><td>'+avg(function(r){return r.s;}).toFixed(1)+'</td><td>'+avg(function(r){return r.m.nd;}).toFixed(0)+'</td><td>'+avg(function(r){return r.m.totalVisits;}).toFixed(0)+'</td><td>'+avg(function(r){return r.m.totalHours;}).toFixed(1)+'</td></tr>';
+    avgRow={s:avg(function(r){return r.s;}),nd:avg(function(r){return r.m.nd;}),v:avg(function(r){return r.m.totalVisits;}),hr:avg(function(r){return r.m.totalHours;})};
   }
+  var avgHtml=avgRow?'<tr class="avg"><td></td><td><i>Average tutor</i></td><td>'+avgRow.s.toFixed(1)+'</td><td>'+avgRow.nd.toFixed(0)+'</td><td>'+avgRow.v.toFixed(0)+'</td><td>'+avgRow.hr.toFixed(1)+'</td></tr>':'';
+  var placed=false;
+  rowsB.forEach(function(r,i){
+    if(avgRow&&!placed&&r.s<avgRow.s){h+=avgHtml;placed=true;}      // the average sits where it ranks, so you can see who is above and below it
+    h+='<tr class="go'+(r.t===cur?' me':'')+'" data-t="'+r.t+'"><td>'+(i+1)+'</td><td>'+T[r.t]+'</td><td>'+r.s.toFixed(1)+'</td><td>'+r.m.nd+'</td><td>'+r.m.totalVisits+'</td><td>'+r.m.totalHours.toFixed(1)+'</td></tr>';
+  });
+  if(avgRow&&!placed){h+=avgHtml;}
+  if(!rowsB.length){h+='<tr><td colspan="6">Not enough workdays yet.</td></tr>';}
   h+='</table></div></details></div>';
   el('tl-board').innerHTML=h;
   var dt=el('tl-board').querySelector('details');if(dt){dt.addEventListener('toggle',function(){boardOpen=dt.open;});}
@@ -3430,6 +3605,10 @@ def tutor_lookup_html():
             '<label><input type="checkbox" id="tl-t1" checked> Appointments</label> &nbsp;(both is the default; turn one off to compare tutors on only the other)</div>'
             '<div class="hint">Shows when and how often the tutor worked, then a score out of 10 compared with the other tutors across every term in the file.</div>'
             '<div class="hint">A weekday needs at least <input type="number" id="tl-minv" value="3" min="1" max="50" style="width:56px"> visits in total within a term (across all its weeks) to count as one this tutor works. Fewer than that is probably a picked-up shift.</div></div>'
+            '<div class="box"><b>Fill in schedules from a work-visit file</b>'
+            '<div class="hint">Export the work visits from TracCloud as a CSV (it needs the columns <i>Date, Time Started</i> and <i>Consultant</i>). Every day a tutor has a work visit becomes a worked day on their calendar, for every tutor at once. '
+            'This replaces the worked days saved for the tutors found in the file; days you marked as called out are kept (unless the file shows the tutor worked that day).</div>'
+            '<input type="file" id="tl-work" accept=".csv,text/csv"><div id="tl-workmsg" class="hint"></div></div>'
             '<div id="tl-result"></div><div id="tl-board"></div></div>')
     return TUTOR_LOOKUP_CSS + body + TUTOR_LOOKUP_JS.replace("__DATA__", data)
 
@@ -3617,24 +3796,25 @@ if "heat_weekday" in figs:
                       "appointment-based (red); both use the same colour scale, so a darker square means more visits in either one.")))
     busy.append(("Subject and time", fig_html(figs["heat_subject"]) + para(heat_note)))
 sections.append(("busy", "Busy Times", subtabs("busy", busy)))
-_ret_html, _ret_notes = ("", [])
-if has_people:
-    _ret_html, _ret_notes = return_rate_section(df, last_complete)
-    notes.extend(_ret_notes)
-_ret_tabs = [("Days between visits", fig_html(figs["gaps"], pk="gaps") + para(gaps_note)),
-             ("First consultant", fig_html(figs["first_dropin"]) + fig_html(figs["first_appt"]))]
-if has_people:
-    _ret_tabs.append(("Return rate", _ret_html))
-sections.append(("returning", "Returning Students", subtabs("retn", _ret_tabs)))
-_cons_tabs = [(lbl, fig_html(f, pk="consult" if lbl == "All" else None)) for lbl, f in consultant_figs]
-_lookup = tutor_lookup_html() if has_consultants else ""
-if _lookup:
-    _cons_tabs.append(("Tutor lookup", _lookup))
-sections.append(("consultants", "Consultants", subtabs("cons", _cons_tabs)))
+if IS_ADMIN:                  # the general edition leaves out everything about individual students and tutors
+    _ret_html, _ret_notes = ("", [])
+    if has_people:
+        _ret_html, _ret_notes = return_rate_section(df, last_complete)
+        notes.extend(_ret_notes)
+    _ret_tabs = [("Days between visits", fig_html(figs["gaps"], pk="gaps") + para(gaps_note)),
+                 ("First consultant", fig_html(figs["first_dropin"]) + fig_html(figs["first_appt"]))]
+    if has_people:
+        _ret_tabs.append(("Return rate", _ret_html))
+    sections.append(("returning", "Returning Students", subtabs("retn", _ret_tabs)))
+    _cons_tabs = [(lbl, fig_html(f, pk="consult" if lbl == "All" else None, post=RESORT_JS if has_consultants else None)) for lbl, f in consultant_figs]
+    _lookup = tutor_lookup_html() if has_consultants else ""
+    if _lookup:
+        _cons_tabs.append(("Tutor lookup", _lookup))
+    sections.append(("consultants", "Consultants", subtabs("cons", _cons_tabs)))
 if _launch.get("launcher"):
     sections.append(("newcsv", "Load new CSV", new_csv_tab_html()))
 
 write_dashboard(sections, notes, "Tutoring Center Dashboard", f"Term start {start:%b %d, %Y} to {end:%b %d, %Y}",
-                csv_path, "tutoring_dashboard.html")
+                csv_path, "tutoring_dashboard.html" if IS_ADMIN else "tutoring_dashboard_general.html")
 if not wait_before_exit():
     pause_for_enter()
